@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 from app.schemas.chat import ChatRequest
-from app.agent.graph import run_tutor
+from app.service.tutor_service import handle_turn
 
 router = APIRouter()
 
@@ -11,6 +11,6 @@ router = APIRouter()
 async def chat(req: ChatRequest):
     async def event_generator():
         # TODO(Day3): LangGraph 실행 결과를 토큰 단위로 SSE 전송
-        async for chunk in run_tutor(req):
+        async for chunk in handle_turn(req):
             yield {"data": chunk}
     return EventSourceResponse(event_generator())
