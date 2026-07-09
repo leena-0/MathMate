@@ -1,10 +1,11 @@
-"""문제은행 조회. Day1~2에 데이터 연결."""
+"""문제은행 조회."""
 from fastapi import APIRouter
+from app.repositories import problem_repo
 
 router = APIRouter()
 
 
 @router.get("/problems")
 def list_problems(unit: str | None = None, difficulty: str | None = None):
-    # TODO(Day2): data/problems.json 에서 단원·난이도별 필터링
-    return {"unit": unit, "difficulty": difficulty, "items": []}
+    items = problem_repo.list_problems(unit, difficulty)
+    return {"unit": unit, "difficulty": difficulty, "count": len(items), "items": items}

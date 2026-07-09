@@ -1,32 +1,59 @@
-"""LangGraph 노드 stub. Day2~3에 실제 로직 구현."""
+"""
+LangGraph 노드 = 에이전트의 각 행동 단계.
+각 노드는 State를 받아 바꿀 부분만 dict로 돌려준다.
+원칙: 최종 정답은 학생이 먼저 말하기 전엔 절대 노출하지 않는다.
+"""
 from app.agent.state import TutorState
+from app.tools import tutor_tools as tools
 
 
-def intent_classify(state: TutorState) -> TutorState:
-    # TODO(Day3): 답 유출 시도/주제 이탈 감지
-    state["intent"] = "normal"
-    return state
+def intent_classify(state: TutorState) -> dict:
+    return {"intent": tools.classify_intent(state["student_attempt"])}
 
 
-def diagnose(state: TutorState) -> TutorState:
-    # TODO(Day2): 학생 풀이에서 막힌/틀린 지점 진단
-    state["diagnosis"] = ""
-    return state
+def refuse_and_redirect(state: TutorState) -> dict:
+    """답 유출 시도 → 정중히 거절 + 정답 대신 첫 힌트."""
+    first_hint = state["problem"]["hint_by_level"]["1"]
+    return {"response": f"답을 바로 알려주면 다음에 또 막혀요. 대신 같이 볼까요? {first_hint}",
+            "hint_level": max(state.get("hint_level", 1), 1)}
 
 
-def generate_hint(state: TutorState) -> TutorState:
-    # TODO(Day3): hint_level에 맞춰 다음 한 걸음 힌트 생성 (Solar API)
-    state["hint"] = ""
-    return state
+def diagnose(state: TutorState) -> dict:
+    d = tools.diagnose_step(state["problem"], state["student_attempt"])
+    return {"diagnosis": d.model_dump()}
 
 
-def leak_verify(state: TutorState) -> TutorState:
-    # TODO(Day3): 힌트에 정답이 섞였는지 검증, 새면 재생성 라우팅
-    state["leak_check"] = True
-    return state
+def generate_hint(state: TutorState) -> dict:
+    """아직 못 풀었을 때 → 다음 한 걸음 힌트."""
+    level = state.get("hint_level", 1)
+    h = tools.generate_hint(state["problem"], level)
+    return {"response": h.hint_text, "hint": h.hint_text, "hint_level": min(level + 1, 3)}
 
 
-def refuse_and_redirect(state: TutorState) -> TutorState:
-    # TODO(Day3): 정중히 거절하고 힌트 단계로 전환
-    state["hint"] = "답을 바로 알려주면 다음에 또 막혀요. 첫 힌트만 같이 볼까요?"
-    return state
+def praise_next(state: TutorState) -> dict:
+    """중간 단계 정답 → 칭찬 + 다음 유도 질문 (정답은 아직 안 말함)."""
+    return {"response": f"맞았어요! {state['problem']['next_question']}"}
+
+
+def final_praise(state: TutorState) -> dict:
+    return {"response": "정확해요! 스스로 끝까지 풀어냈네요. 정말 잘했어요!", "solved": True}
+
+
+def leak_verify(state: TutorState) -> dict:
+    """가드레일: 응답 직전 정답 유출 검사, 샜으면 가린다."""
+    safe = tools.verify_no_leak(state.get("response", ""), str(state["problem"]["answer"]))
+    if not safe:
+        return {"response": "(정답을 바로 말하지 않을게요!) 다시 힌트로 가볼까요?", "leak_check": False}
+    return {"leak_check": True}
+
+
+# ----- 라우팅 -----
+def route_after_intent(state: TutorState) -> str:
+    return "refuse" if state["intent"] == "answer_seeking" else "diagnose"
+
+
+def route_after_diagnose(state: TutorState) -> str:
+    d = state["diagnosis"]
+    if d["solved"]:
+        return "final"
+    return "praise" if d["is_correct"] else "hint"

@@ -1,14 +1,18 @@
-"""LangGraph State 정의."""
+"""LangGraph State — 노드 사이 공유 데이터.
+팀원 초안 필드를 유지하고, 병합에 필요한 response/solved 를 추가했다.
+"""
 from typing import TypedDict
 
 
-class TutorState(TypedDict):
-    messages: list        # 대화 이력 (Sliding Window 적용 예정)
-    problem: str          # 현재 문제
-    answer: str           # 정답 (유출 검증용, 학생에게 노출 금지)
-    student_attempt: str  # 학생의 최근 풀이/답
-    intent: str           # normal | answer_seeking | off_topic
-    diagnosis: str        # 막힌 지점/오답 원인
-    hint_level: int       # 힌트 구체화 단계 (1~3)
-    hint: str             # 생성된 힌트
-    leak_check: bool      # 정답 유출 여부 검증 결과
+class TutorState(TypedDict, total=False):
+    messages: list          # 대화 이력 (Sliding Window: Day5)
+    problem: dict           # 현재 문제 (problems.sample.json 한 항목)
+    answer: str             # 정답 (유출 검증용, 학생 노출 금지)
+    student_attempt: str    # 학생의 최근 풀이/답
+    intent: str             # normal | answer_seeking | off_topic
+    diagnosis: dict         # {stuck_point, is_correct, solved}
+    hint_level: int         # 힌트 구체화 단계 (1~3)
+    hint: str               # 생성된 힌트
+    response: str           # 학생에게 보낼 최종 문장
+    leak_check: bool        # 정답 유출 검증 결과 (True=안전)
+    solved: bool            # 최종 정답 도달 여부

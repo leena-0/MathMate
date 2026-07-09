@@ -71,3 +71,21 @@ app/
 data/                문제은행 JSON
 tests/               pytest
 ```
+
+---
+
+## Day 2 진행 상태 (Mock 기반 MVP)
+
+- ✅ Layered Architecture: `agent`(그래프) · `tools`(도구) · `repositories`(문제은행) · `api` · `schemas` · `db`
+- ✅ Pydantic Tool Schema: `Hint`, `Diagnosis` + State(`agent/state.py`)
+- ✅ LangGraph ReAct 루프: `intent_classify → (refuse | diagnose → hint/praise/final) → leak_verify`
+- ✅ Mock LLM 로직(`tools/tutor_tools.py`)으로 핵심 시나리오 1개 성공
+- ✅ 테스트 통과: `pytest -q` → 6 passed (health 1 + 소크라테스 시나리오 5)
+
+```bash
+pytest -q          # 6 passed
+python run_demo.py # FE 스케치 대화 재현
+```
+
+### Day 3 예정
+`tools/tutor_tools.py`의 Mock 규칙 → Solar API 호출로 교체, `api/chat.py` SSE 토큰 스트리밍 실제 구현.
