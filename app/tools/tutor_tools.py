@@ -1,26 +1,41 @@
-"""핵심 Tool stub. Day2~3에 실제 구현."""
+"""
+핵심 Tool 구현 (Day2 = Mock 규칙 기반).
+Day3에서 각 함수 내부만 Solar API 호출(구조화 출력)로 교체하면
+바깥 시그니처가 같아 그래프/노드는 그대로 동작한다.
+"""
+import re
 from app.schemas.chat import Hint, Diagnosis
+
+# 학생이 답을 그냥 달라고 조르는 표현 (우회 요청 감지)
+_LEAK_PATTERNS = ["답 알려", "답만", "정답 뭐", "정답이 뭐", "그냥 알려", "풀어줘", "답 좀", "정답 알려", "답이 뭐"]
 
 
 def classify_intent(message: str) -> str:
-    """답 유출 시도/주제 이탈 감지. returns: normal|answer_seeking|off_topic"""
-    # TODO(Day3)
+    """returns: normal | answer_seeking | off_topic"""
+    if any(p in message for p in _LEAK_PATTERNS):
+        return "answer_seeking"
     return "normal"
 
 
-def diagnose_step(problem: str, attempt: str) -> Diagnosis:
-    """오답/막힌 지점 진단."""
-    # TODO(Day2)
-    return Diagnosis(stuck_point="", is_correct=False)
+def diagnose_step(problem: dict, attempt: str) -> Diagnosis:
+    """오답/막힌 지점 진단 (Mock 휴리스틱; Day3 Solar가 일반화)."""
+    ans = str(problem["answer"]).replace(" ", "")
+    text = attempt.replace(" ", "")
+    if ans in text and "묶음" not in text:          # 최종 정답
+        return Diagnosis(stuck_point="", is_correct=True, solved=True)
+    if "묶음" in text and ans in text:              # 중간 단계 정답
+        return Diagnosis(stuck_point="", is_correct=True, solved=False)
+    return Diagnosis(stuck_point="나눗셈의 의미를 아직 못 잡음", is_correct=False, solved=False)
 
 
-def generate_hint(problem: str, diagnosis: str, hint_level: int) -> Hint:
-    """단계별 힌트 생성 (Solar API)."""
-    # TODO(Day3)
-    return Hint(hint_text="", level=hint_level, contains_answer=False)
+def generate_hint(problem: dict, hint_level: int) -> Hint:
+    """hint_level(1~3)에 맞춰 다음 한 걸음 힌트."""
+    level = max(1, min(hint_level, 3))
+    return Hint(hint_text=problem["hint_by_level"][str(level)], level=level, contains_answer=False)
 
 
-def verify_no_leak(hint: str, answer: str) -> bool:
-    """정답 유출 여부 판정. True면 안전."""
-    # TODO(Day3): 최소한 answer 문자열이 hint에 직접 포함됐는지부터 체크
-    return answer not in hint
+def verify_no_leak(text: str, answer: str) -> bool:
+    """정답 유출 여부 판정. True=안전.
+    정답 숫자가 응답에 '단독'으로 등장하면 위험 (45의 5 같은 건 통과)."""
+    ans = str(answer).strip()
+    return re.search(rf"(?<!\d){re.escape(ans)}(?!\d)", text) is None
