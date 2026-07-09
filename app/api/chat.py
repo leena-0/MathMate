@@ -1,4 +1,4 @@
-"""튜터 대화 엔드포인트 (SSE 스트리밍). Day3에 실제 구현."""
+"""튜터 대화 엔드포인트 (SSE 스트리밍)."""
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 from app.schemas.chat import ChatRequest
@@ -10,7 +10,6 @@ router = APIRouter()
 @router.post("/chat")
 async def chat(req: ChatRequest):
     async def event_generator():
-        # TODO(Day3): LangGraph 실행 결과를 토큰 단위로 SSE 전송
         async for chunk in handle_turn(req):
             yield {"data": chunk}
     return EventSourceResponse(event_generator())
