@@ -45,7 +45,7 @@ def chat_json(system: str, user: str) -> dict | None:
         content = _call(system, user, temperature=0.0, json_mode=True)
         return _safe_json(content)
     except Exception as e:   # 인증(401)·잘못된요청(400)·서버오류(5xx)·타임아웃 등
-        log.warning("Solar JSON 호출 실패 → Mock 폴백: %s", e)
+        _log_failure("JSON", e)
         return None
 
 
@@ -56,8 +56,30 @@ def chat_text(system: str, user: str) -> str | None:
     try:
         return _call(system, user, temperature=0.4, json_mode=False)
     except Exception as e:
-        log.warning("Solar 텍스트 호출 실패 → 기본 힌트 폴백: %s", e)
+        _log_failure("텍스트", e)
         return None
+
+
+def _log_failure(context: str, e: Exception) -> None:
+    """에러 유형별로 원인을 구분해 로그를 남긴다. 폴백 동작(Mock)은 어떤 경우든 동일하다.
+
+    - 인증 오류: 재시도해도 소용없음(키 문제) → 즉시 폴백
+    - 요청 한도: num_retries만큼 이미 재시도한 뒤에도 실패한 것
+    - 타임아웃/연결·서버 오류: 일시적 장애 가능성, 다음 요청에서 복구될 수 있음
+    """
+    import litellm.exceptions as exc   # 지연 임포트: 키 없는 환경/테스트에선 불필요
+
+    if isinstance(e, exc.AuthenticationError):
+        log.warning("Solar %s 호출 실패(인증 오류 — API 키 확인 필요) → Mock 폴백: %s", context, e)
+    elif isinstance(e, exc.RateLimitError):
+        log.warning("Solar %s 호출 실패(요청 한도 초과 — 재시도 모두 소진) → Mock 폴백: %s", context, e)
+    elif isinstance(e, exc.Timeout):
+        log.warning("Solar %s 호출 실패(응답 시간 초과) → Mock 폴백: %s", context, e)
+    elif isinstance(e, (exc.APIConnectionError, exc.ServiceUnavailableError,
+                         exc.InternalServerError, exc.BadGatewayError)):
+        log.warning("Solar %s 호출 실패(서버/네트워크 오류) → Mock 폴백: %s", context, e)
+    else:
+        log.warning("Solar %s 호출 실패(알 수 없는 오류) → Mock 폴백: %s", context, e)
 
 
 def _safe_json(text: str | None):
