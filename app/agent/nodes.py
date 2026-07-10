@@ -1,6 +1,5 @@
 """
 LangGraph 노드 = 에이전트의 각 행동 단계.
-각 노드는 State를 받아 바꿀 부분만 dict로 돌려준다.
 원칙: 최종 정답은 학생이 먼저 말하기 전엔 절대 노출하지 않는다.
 """
 from app.agent.state import TutorState
@@ -18,6 +17,11 @@ def refuse_and_redirect(state: TutorState) -> dict:
             "hint_level": max(state.get("hint_level", 1), 1)}
 
 
+def handle_off_topic(state: TutorState) -> dict:
+    """주제 이탈(잡담) → 부드럽게 수학으로 유도."""
+    return {"response": "우리 지금 수학 문제를 풀고 있어요! 먼저 이 문제부터 같이 풀어볼까요?"}
+
+
 def diagnose(state: TutorState) -> dict:
     d = tools.diagnose_step(state["problem"], state["student_attempt"])
     return {"diagnosis": d.model_dump()}
@@ -31,7 +35,6 @@ def generate_hint(state: TutorState) -> dict:
 
 
 def praise_next(state: TutorState) -> dict:
-    """중간 단계 정답 → 칭찬 + 다음 유도 질문 (정답은 아직 안 말함)."""
     return {"response": f"맞았어요! {state['problem']['next_question']}"}
 
 
@@ -40,7 +43,7 @@ def final_praise(state: TutorState) -> dict:
 
 
 def leak_verify(state: TutorState) -> dict:
-    """가드레일: 응답 직전 정답 유출 검사, 샜으면 가린다."""
+    """출력단 가드레일: 응답 직전 정답 유출 검사, 샜으면 가린다."""
     safe = tools.verify_no_leak(state.get("response", ""), str(state["problem"]["answer"]))
     if not safe:
         return {"response": "(정답을 바로 말하지 않을게요!) 다시 힌트로 가볼까요?", "leak_check": False}
@@ -49,7 +52,12 @@ def leak_verify(state: TutorState) -> dict:
 
 # ----- 라우팅 -----
 def route_after_intent(state: TutorState) -> str:
-    return "refuse" if state["intent"] == "answer_seeking" else "diagnose"
+    it = state["intent"]
+    if it == "answer_seeking":
+        return "refuse"
+    if it == "off_topic":
+        return "offtopic"
+    return "diagnose"
 
 
 def route_after_diagnose(state: TutorState) -> str:
