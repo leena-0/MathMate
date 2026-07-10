@@ -111,7 +111,10 @@ docker compose up -d --build
 ### GitHub Actions CI/CD
 
 - `ci.yml`: main/PR push마다 `pytest` 자동 실행
-- `cd.yml`: CI 성공 후 main에 한해 SSH로 GCE VM에 접속해 `git pull` + `docker compose up -d --build`로 자동 배포
+- `cd.yml`: CI 성공 후 main에 한해 3단계로 자동 배포
+  1. **Build & Push to GHCR**: API/Frontend 이미지를 빌드해 `ghcr.io/leena-0/mathmate-{api,frontend}`에 push (태그: `latest` + 커밋 SHA)
+  2. **Deploy to Compute Engine**: SSH로 GCE VM 접속 → `git pull`(compose 설정 갱신용) → GHCR 로그인 → `docker compose pull && docker compose up -d` (VM에서 재빌드하지 않고 미리 빌드된 이미지만 받아서 기동)
+  3. **Deployment Summary**: 배포된 API 헬스체크 + 배포 URL을 Actions 요약에 기록
 
 CD를 쓰려면 저장소 Settings → Secrets and variables → Actions에 아래를 등록해야 한다.
 
