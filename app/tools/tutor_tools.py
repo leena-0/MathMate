@@ -16,12 +16,13 @@ _OFFTOPIC_PATTERNS = ["게임", "놀자", "심심", "축구", "노래", "영화"
 _VALID_INTENTS = {"normal", "answer_seeking", "off_topic"}
 
 
-def classify_intent(message: str) -> str:
-    """의도 분류: normal | answer_seeking | off_topic (입력단 가드레일)."""
-    data = llm_client.chat_json(prompts.INTENT_SYS, message)
+def classify_intent(message: str, problem: dict) -> str:
+    """의도 분류: normal | answer_seeking | off_topic (입력단 가드레일).
+    현재 푸는 '문제'를 함께 넘겨, 짧은 답('9' 등)을 잡담으로 오판하지 않게 한다."""
+    data = llm_client.chat_json(prompts.INTENT_SYS, prompts.intent_user(problem, message))
     if data and data.get("intent") in _VALID_INTENTS:
         return data["intent"]
-    # --- Mock 폴백 ---
+    # --- Mock 폴백 (문제 맥락 없이 규칙만) ---
     if any(p in message for p in _LEAK_PATTERNS):
         return "answer_seeking"
     if any(p in message for p in _OFFTOPIC_PATTERNS):
