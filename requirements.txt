@@ -5,6 +5,7 @@ langchain-core
 pydantic
 sse-starlette
 httpx
+streamlit
 psycopg2-binary
 sqlalchemy
 python-dotenv
