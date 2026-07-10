@@ -13,3 +13,4 @@ pytest
 deepeval
 litellm
 datasets
+langfuse<3
