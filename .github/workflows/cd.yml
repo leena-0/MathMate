@@ -1,0 +1,24 @@
+name: CD
+
+# CI(테스트)가 main에서 성공적으로 끝난 뒤에만 배포한다.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH로 GCE VM 접속 후 최신 코드 pull + 컨테이너 재빌드
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.GCE_HOST }}
+          username: ${{ secrets.GCE_USER }}
+          key: ${{ secrets.GCE_SSH_KEY }}
+          script: |
+            cd ${{ vars.GCE_DEPLOY_PATH || '~/MathMate' }}
+            git pull origin main
+            docker compose up -d --build

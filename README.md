@@ -42,7 +42,7 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # 3. 환경변수 설정 (.env)
-cp .env.example .env            # SOLAR_API_KEY 등 채우기
+cp .env.example .env            # UPSTAGE_API_KEY 등 채우기
 
 # 4. 실행
 uvicorn app.main:app --reload
@@ -55,7 +55,7 @@ curl http://localhost:8000/api/health
 
 | 변수 | 설명 |
 |---|---|
-| `SOLAR_API_KEY` | Solar API 키 |
+| `UPSTAGE_API_KEY` | Solar API 키 |
 | `DATABASE_URL`  | PostgreSQL 접속 URL |
 
 ## 프로젝트 구조
@@ -89,3 +89,35 @@ python run_demo.py # FE 스케치 대화 재현
 
 ### Day 3 예정
 `tools/tutor_tools.py`의 Mock 규칙 → Solar API 호출로 교체, `api/chat.py` SSE 토큰 스트리밍 실제 구현.
+
+## 배포 (Docker Compose + GCE)
+
+### 로컬에서 컨테이너로 실행
+
+```bash
+cp .env.example .env   # UPSTAGE_API_KEY 등 채우기
+docker compose up -d --build
+# API:      http://localhost:8000
+# Frontend: http://localhost:8501
+```
+
+### GCE VM 배포 (최초 1회, 수동)
+
+1. GCE VM에 Docker + Docker Compose 플러그인 설치
+2. 방화벽에서 8000, 8501 포트 열기
+3. VM에 저장소 clone 후 `.env` 파일 생성 (실제 키 값 채우기 — git에는 올라가지 않음)
+4. `docker compose up -d --build`로 최초 기동
+
+### GitHub Actions CI/CD
+
+- `ci.yml`: main/PR push마다 `pytest` 자동 실행
+- `cd.yml`: CI 성공 후 main에 한해 SSH로 GCE VM에 접속해 `git pull` + `docker compose up -d --build`로 자동 배포
+
+CD를 쓰려면 저장소 Settings → Secrets and variables → Actions에 아래를 등록해야 한다.
+
+| Secret/Variable | 설명 |
+|---|---|
+| `GCE_HOST` | VM 외부 IP |
+| `GCE_USER` | SSH 접속 계정 |
+| `GCE_SSH_KEY` | SSH 개인키 |
+| `GCE_DEPLOY_PATH` (변수, 선택) | VM 위의 저장소 경로, 기본값 `~/MathMate` |
