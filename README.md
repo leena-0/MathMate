@@ -2,132 +2,73 @@
 
 > 정답을 알려주지 않고 힌트로만 유도하는 초등 수학 소크라테스식 튜터
 
-가천대 AI 부트캠프 · 생성형AI 고급과정 프로젝트
-팀원: 권지운, 이나영
-
-## 소개
+## 프로젝트 소개
 
 MathMate는 초등학교 4~6학년 학생을 대상으로 하는 대화형 수학 튜터입니다.
 일반적인 AI 튜터와 달리 **정답을 직접 알려주지 않고**, 학생이 틀려도
-힌트와 되질문으로만 스스로 답에 도달하도록 유도합니다.
+소크라테스식 힌트와 되질문으로만 스스로 답에 도달하도록 유도합니다.
+Solar(Upstage) LLM과 LangGraph 기반 에이전트로 학생의 풀이 단계를 진단하고,
+답 유출 방지 가드레일을 이중 삼중으로 걸어 "빠른 정답" 대신 "스스로 생각할 시간"을 지켜줍니다.
 
-- **답 유출 방지 가드레일**: 최종 정답을 노출하지 않고, "답만 알려줘" 같은 우회 요청도 차단
-- **단계적 힌트**: 막힌 지점을 진단해 다음 한 걸음만 유도
-- **진척도 추적**: 정답률이 아니라 "힌트 사용량"으로 단원별 숙련도를 측정
+## 문제 정의
 
-## 기술 스택
+최근 숏폼 콘텐츠(유튜브 쇼츠, 틱톡 등)의 범람으로, 즉각적인 보상에 길들여진
+아이들의 '팝콘 브레인' 현상과 집중력 저하, 더 나아가 소아·청소년 ADHD 발병률
+증가는 심각한 사회적 문제로 대두되고 있습니다.
 
-- **Agent**: LangGraph
-- **Backend**: FastAPI + SSE (스트리밍)
-- **LLM**: Solar API
-- **DB**: PostgreSQL (진척도·체크포인트)
-- **평가**: DeepEval
-- **배포**: Docker + GCP Compute Engine + GitHub Actions
+이러한 상황에서 시장에 나온 대부분의 AI 튜터는 학생이 모르는 문제를 물어보면
+정답과 풀이 과정을 즉각적으로 제공합니다. 당장 눈앞의 숙제를 끝내기에는
+편하지만, 이는 '빠른 정답'이라는 또 다른 도파민을 제공할 뿐 학생이 스스로
+끈기 있게 사고할 기회를 빼앗아 결과적으로 인지 능력과 학습 습관에 '독'이 됩니다.
 
-## 데이터
+특히 대상 사용자를 **초등학교 4~6학년**으로 특정한 이유는, 이 시기가
+'수포자(수학 포기자)'가 대거 발생하는 결정적 골든타임이기 때문입니다.
+중·고등학교에서는 인강, 문제집 등으로 이미 전문화된 학습 방식을 따라가야
+하는 시기라, 그 이전인 초등 고학년 때 정답을 쉽게 얻어내는 잘못된 습관이
+들면 중·고등학교의 고도화된 수리 논리력을 절대 따라갈 수 없게 됩니다.
 
-- 출처: [kuotient/orca-math-word-problems-193k-korean](https://huggingface.co/datasets/kuotient/orca-math-word-problems-193k-korean) (CC-BY-SA-4.0)
-- 초등 4~6학년 문장제에서 선별 → 단원·난이도 라벨링 → 단계별 힌트 보강
+## 문제 해결
 
-## 설치 및 실행
+MathMate는 위 문제를 다음과 같이 풀어냅니다.
 
-```bash
-# 1. 저장소 클론
-git clone https://github.com/leena-0/MathMate.git
-cd MathMate
+- **소크라테스식 대화**: 정답을 바로 주지 않고, 학생이 막힌 지점을 진단해
+  "다음 한 걸음"만 힌트로 제시 → 스스로 생각할 여지를 남긴다.
+- **답 유출 방지 가드레일(이중화)**: "답만 알려줘" 같은 직접적인 요구는
+  물론, 응답을 내보내기 직전에도 정답 숫자가 새어 나가지 않는지 한 번 더
+  검사한다 (`refuse_and_redirect` → `leak_verify`).
+- **단계적 힌트(1~3단계)**: 한 번에 다 알려주지 않고, 막힌 정도에 따라
+  점점 구체화되는 힌트를 단계별로 제공한다.
+- **진척도 추적**: 정답률이 아니라 "힌트를 얼마나 적게 쓰고 스스로
+  풀었는지"로 단원별 숙련도를 측정해, 장기적으로 스스로 생각하는 습관을
+  강화하는 방향으로 설계했다.
 
-# 2. 가상환경 + 의존성
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+## 핵심 기능
 
-# 3. 환경변수 설정 (.env)
-cp .env.example .env            # UPSTAGE_API_KEY 등 채우기
+- **실시간 SSE 스트리밍 채팅**: 튜터의 답변이 토큰 단위로 타이핑되듯 표시
+- **실제 Solar(Upstage) LLM 연동**: 의도 분류 → 진단 → 힌트 생성까지 LangGraph
+  에이전트가 조율, 실패 시 Retry·Fallback·Mock 규칙으로 자동 복구
+- **초등학생 친화적 채팅 UI**: Streamlit 기반, 파스텔톤·큰 글씨·이모지 아바타로
+  구성된 학생-튜터 말풍선 채팅 화면
+- **LLMOps 운영 안정성**: 에러 유형별 재시도/폴백, Langfuse로 모든 LLM 호출
+  트레이싱
+- **문제은행**: HuggingFace 공개 데이터셋에서 초등 4~6학년 문장제를 선별해
+  단원·난이도·단계별 힌트로 가공
+- **원클릭 배포**: Docker Compose + GCE, GitHub Actions로 CI/CD 자동화
 
-# 4. 실행
-uvicorn app.main:app --reload
+## 데모 영상
 
-# 5. 동작 확인
-curl http://localhost:8000/api/health
-```
+_(추후 추가 예정)_
 
-## 환경변수
+## 팀원 소개
 
-| 변수 | 설명 |
+| 이름 | 담당 |
 |---|---|
-| `UPSTAGE_API_KEY` | Solar API 키 |
-| `DATABASE_URL`  | PostgreSQL 접속 URL |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | (선택) LLM 호출 트레이싱. 비워두면 비활성 |
+| 권지운 | ... |
+| 이나영 | ... |
 
-## 프로젝트 구조
+## 참고자료 / 발표자료
 
-```
-app/
-├── main.py          FastAPI 진입점 (/api/health)
-├── api/             라우터 (chat, problems, session)
-├── agent/           LangGraph State/Node/Graph
-├── tools/           진단·힌트생성·유출검증 도구
-├── schemas/         Pydantic 모델
-└── db/              PostgreSQL 모델
-data/                문제은행 JSON
-tests/               pytest
-```
-
----
-
-## Day 2 진행 상태 (Mock 기반 MVP)
-
-- ✅ Layered Architecture: `agent`(그래프) · `tools`(도구) · `repositories`(문제은행) · `api` · `schemas` · `db`
-- ✅ Pydantic Tool Schema: `Hint`, `Diagnosis` + State(`agent/state.py`)
-- ✅ LangGraph ReAct 루프: `intent_classify → (refuse | diagnose → hint/praise/final) → leak_verify`
-- ✅ Mock LLM 로직(`tools/tutor_tools.py`)으로 핵심 시나리오 1개 성공
-- ✅ 테스트 통과: `pytest -q` → 6 passed (health 1 + 소크라테스 시나리오 5)
-
-```bash
-pytest -q          # 6 passed
-python run_demo.py # FE 스케치 대화 재현
-```
-
-### Day 3 예정
-`tools/tutor_tools.py`의 Mock 규칙 → Solar API 호출로 교체, `api/chat.py` SSE 토큰 스트리밍 실제 구현.
-
-## 배포 (Docker Compose + GCE)
-
-### 로컬에서 컨테이너로 실행
-
-```bash
-cp .env.example .env   # UPSTAGE_API_KEY 등 채우기
-docker compose up -d --build
-# API:      http://localhost:8000
-# Frontend: http://localhost:8501
-```
-
-### GCE VM 배포 (최초 1회, 수동)
-
-1. GCE VM에 Docker + Docker Compose 플러그인 설치
-2. 방화벽에서 8000, 8501 포트 열기
-3. VM에 저장소 clone 후 `.env` 파일 생성 (실제 키 값 채우기 — git에는 올라가지 않음)
-4. `docker compose up -d --build`로 최초 기동
-
-### GitHub Actions CI/CD
-
-- `ci.yml`: main/PR push마다 `pytest` 자동 실행
-- `cd.yml`: CI 성공 후 main에 한해 3단계로 자동 배포
-  1. **Build & Push to GHCR**: API/Frontend 이미지를 빌드해 `ghcr.io/leena-0/mathmate-{api,frontend}`에 push (태그: `latest` + 커밋 SHA)
-  2. **Deploy to Compute Engine**: SSH로 GCE VM 접속 → `git pull`(compose 설정 갱신용) → GHCR 로그인 → `docker compose pull && docker compose up -d` (VM에서 재빌드하지 않고 미리 빌드된 이미지만 받아서 기동)
-  3. **Deployment Summary**: 배포된 API 헬스체크 + 배포 URL을 Actions 요약에 기록
-
-CD를 쓰려면 저장소 Settings → Secrets and variables → Actions에 아래를 등록해야 한다.
-
-| Secret/Variable | 설명 |
-|---|---|
-| `GCE_HOST` | VM 외부 IP |
-| `GCE_USER` | SSH 접속 계정 |
-| `GCE_SSH_KEY` | SSH 개인키 |
-| `GCE_DEPLOY_PATH` (변수, 선택) | VM 위의 저장소 경로, 기본값 `~/MathMate` |
-
-## LLMOps 운영 안정성
-
-- **Retry·Fallback**: Solar 호출 실패(429/5xx/타임아웃) 시 LiteLLM이 자동 재시도(`LLM_NUM_RETRIES`), 그래도 실패하면 대체 모델(`FALLBACK_MODEL`) 또는 Mock 규칙으로 폴백. 에러 유형(인증/요청한도/타임아웃/서버오류)별로 로그를 구분해 남긴다 (`app/core/llm_client.py`).
-- **Guardrail**: 답 유출 시도는 `refuse_and_redirect`가 차단하고 첫 힌트로 대신 유도, 수학과 무관한 잡담은 `handle_off_topic`이 리다이렉트, 응답을 내보내기 직전 `leak_verify`가 정답 숫자 유출 여부를 최종 검사한다 (`app/agent/nodes.py`).
-- **Langfuse Trace**: `LANGFUSE_*` 키를 설정하면 모든 Solar 호출(프롬프트·응답·지연시간·에러)이 Langfuse 대시보드에 `intent_classify`/`diagnose_step`/`generate_hint` 단위로 트레이싱된다. `litellm`과의 호환성 때문에 `langfuse<3`(v2 SDK) 고정 필요.
+- 데이터 출처: [kuotient/orca-math-word-problems-193k-korean](https://huggingface.co/datasets/kuotient/orca-math-word-problems-193k-korean) (CC-BY-SA-4.0)
+- GitHub: [leena-0/MathMate](https://github.com/leena-0/MathMate)
+- 개발 문서(설치·배포·LLMOps): [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- 발표자료: _(추후 추가 예정)_
