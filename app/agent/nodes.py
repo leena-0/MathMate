@@ -7,7 +7,8 @@ from app.tools import tutor_tools as tools
 
 
 def intent_classify(state: TutorState) -> dict:
-    return {"intent": tools.classify_intent(state["student_attempt"])}
+    # 현재 푸는 문제를 함께 넘겨 맥락 기반으로 분류 (짧은 답을 잡담으로 오판 방지)
+    return {"intent": tools.classify_intent(state["student_attempt"], state["problem"])}
 
 
 def refuse_and_redirect(state: TutorState) -> dict:
