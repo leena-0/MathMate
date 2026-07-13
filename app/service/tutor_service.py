@@ -23,6 +23,8 @@ async def handle_turn(req: ChatRequest):
                 unit=state.get("unit", ""),
                 hints_used=state.get("hint_level", 1),
                 solved=True,
+                grade=state.get("grade"),
+                semester=state.get("semester"),
             )
         except Exception as e:   # 진척도 저장 실패가 튜터 응답 자체를 막으면 안 됨
             log.warning("진척도 기록 실패(무시하고 계속 진행): %s", e)

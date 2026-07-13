@@ -137,9 +137,14 @@ def fetch_problems(grade: int, semester: int, unit: str | None, difficulty: str 
         return []
 
 
-def fetch_feedback(user_id: int) -> dict | None:
+def fetch_feedback(user_id: int, grade: int | None = None, semester: int | None = None) -> dict | None:
+    params = {"user_id": user_id}
+    if grade is not None:
+        params["grade"] = grade
+    if semester is not None:
+        params["semester"] = semester
     try:
-        res = httpx.get(f"{BACKEND_URL}/api/feedback", params={"user_id": user_id}, timeout=5)
+        res = httpx.get(f"{BACKEND_URL}/api/feedback", params=params, timeout=5)
         res.raise_for_status()
         return res.json()
     except httpx.HTTPError:
@@ -185,6 +190,20 @@ def render_bubble(role: str, text: str, placeholder=None):
         </div>
         """
     (placeholder if placeholder is not None else st).markdown(block, unsafe_allow_html=True)
+
+
+def render_thinking_bubble(placeholder):
+    """응답 첫 글자가 오기 전, 튜터가 생각 중이라는 걸 보여주는 임시 말풍선."""
+    block = f"""
+    <div style="display:flex; justify-content:flex-end; align-items:flex-end; margin:14px 0;">
+      <div style="background:{TUTOR_BUBBLE_COLOR}; border-radius:20px; padding:12px 16px;
+                  max-width:75%; font-size:17px; line-height:1.7; color:#8A7A4A;">
+        🧮 생각하고 있어요... 💭
+      </div>
+      <div style="font-size:26px; margin-left:8px;">{TUTOR_AVATAR}</div>
+    </div>
+    """
+    placeholder.markdown(block, unsafe_allow_html=True)
 
 
 def stream_tutor_reply(user_id: int, problem_id: str, message: str, placeholder) -> str:
@@ -273,6 +292,17 @@ if "selected_semester" not in st.session_state:
 
 # ---------- 학습 화면 ----------
 
+def _search_problems(grade, semester, unit, difficulty):
+    """'문제 조회' 버튼 콜백: 조건에 맞는 문제를 찾아 첫 문제를 고르고 채팅을 초기화한다."""
+    problems = fetch_problems(grade, semester, unit, difficulty)
+    st.session_state.searched_problems = problems
+    st.session_state.searched_key = (grade, semester, unit, difficulty)
+    st.session_state.messages = []
+    if problems:
+        st.session_state.problem_id = problems[0]["id"]
+        st.session_state._last_problem_id = problems[0]["id"]
+
+
 def render_study_page():
     st.title("🧮 MathMate")
     st.caption("선생님이랑 같이 수학 문제를 풀어볼까요? 😊")
@@ -290,19 +320,26 @@ def render_study_page():
     units = fetch_units(grade, semester)
     if not units:
         st.info("이 학년·학기엔 아직 문제가 없어요. 다른 학년이나 학기를 골라볼까요?")
-        st.stop()
+        return
     with col3:
-        default_unit = st.session_state.get("preselect_unit")
-        unit_options = units
-        unit_index = unit_options.index(default_unit) if default_unit in unit_options else 0
-        unit = st.selectbox("단원", unit_options, index=unit_index)
+        default_unit = st.session_state.pop("preselect_unit", None)
+        if st.session_state.get("selected_unit") not in units:
+            st.session_state.selected_unit = default_unit if default_unit in units else units[0]
+        unit = st.selectbox("단원", units, key="selected_unit")
     with col4:
-        difficulty = st.selectbox("난이도", ["쉬움", "중간", "어려움"], index=0)
+        difficulty = st.selectbox("난이도", ["쉬움", "중간", "어려움"], key="selected_difficulty")
 
-    problems = fetch_problems(grade, semester, unit, difficulty)
+    st.button("🔍 문제 조회", type="primary",
+              on_click=_search_problems, args=(grade, semester, unit, difficulty))
+
+    if "searched_key" not in st.session_state:
+        st.info("👆 학년·학기·단원·난이도를 고르고 '문제 조회'를 눌러줘!")
+        return
+
+    problems = st.session_state.searched_problems
     if not problems:
         st.info("이 조건에 맞는 문제가 아직 없어요. 다른 난이도나 단원을 골라볼까요?")
-        st.stop()
+        return
 
     labels = {p["id"]: f'{p["problem"][:24]}...' if len(p["problem"]) > 24 else p["problem"] for p in problems}
 
@@ -313,7 +350,7 @@ def render_study_page():
         key="problem_id",
     )
 
-    # 문제가 바뀐 이유(직접 선택/학년·학기·단원 변경/새 문제 보기 버튼)에 상관없이,
+    # 문제가 바뀐 이유(직접 선택/새 조회/새 문제 보기 버튼)에 상관없이,
     # 이전에 보여준 문제와 달라졌으면 채팅 기록을 초기화한다.
     if st.session_state.get("_last_problem_id") != problem_id:
         st.session_state.messages = []
@@ -338,6 +375,7 @@ def render_study_page():
         render_bubble("user", user_message)
 
         placeholder = st.empty()
+        render_thinking_bubble(placeholder)
         reply = stream_tutor_reply(user["user_id"], problem_id, user_message, placeholder)
         st.session_state.messages.append({"role": "assistant", "content": reply})
 
@@ -352,7 +390,18 @@ def render_feedback_page():
     st.title("📊 단원별 학습 리포트")
     st.caption("힌트를 적게 쓰고 스스로 풀수록 숙련도가 높아요")
 
-    feedback = fetch_feedback(user["user_id"])
+    col1, col2 = st.columns(2)
+    with col1:
+        grade_options = ["전체"] + [4, 5, 6]
+        grade_choice = st.selectbox("학년", grade_options, key="feedback_grade")
+    with col2:
+        semester_options = ["전체", 1, 2]
+        semester_choice = st.selectbox("학기", semester_options, key="feedback_semester")
+
+    grade = None if grade_choice == "전체" else grade_choice
+    semester = None if semester_choice == "전체" else semester_choice
+
+    feedback = fetch_feedback(user["user_id"], grade, semester)
     if feedback is None:
         st.error("앗, 서버랑 연결이 안 돼요. 선생님을 불러주세요!")
         st.stop()
