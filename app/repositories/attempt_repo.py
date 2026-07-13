@@ -46,5 +46,10 @@ def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | Non
             "problems_attempted": len(hints),
             "avg_hints_used": round(avg_hints, 1),
             "mastery_level": _mastery_level(avg_hints),
+            "_avg_hints_raw": avg_hints,   # 반올림 전 값 — 정렬용, 반환 직전에 제거
         })
-    return sorted(items, key=lambda x: x["avg_hints_used"], reverse=True)
+    # 평균 힌트가 높은(약한) 순, 반올림 때문에 동점이면 문제 수가 적은(연습 덜 된) 쪽을 우선한다.
+    items.sort(key=lambda x: (-x["_avg_hints_raw"], x["problems_attempted"]))
+    for item in items:
+        del item["_avg_hints_raw"]
+    return items
