@@ -48,7 +48,13 @@ def _call(system: str, user: str, temperature: float, json_mode: bool, trace_nam
         metadata={"trace_name": trace_name},   # Langfuse 대시보드에서 호출 종류 구분용
     )
     if config.FALLBACK_MODEL:
-        kwargs["fallbacks"] = [config.FALLBACK_MODEL]   # 메인 실패 시 대체 모델
+        # 문자열로만 넘기면 LiteLLM이 Solar용 api_key/api_base를 그대로 재사용해서
+        # 대체 모델(예: Gemini) 호출이 무조건 실패한다 — 딕셔너리로 명시적으로 덮어써야 한다.
+        kwargs["fallbacks"] = [{
+            "model": config.FALLBACK_MODEL,
+            "api_key": config.GEMINI_API_KEY,
+            "api_base": None,
+        }]
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     resp = litellm.completion(**kwargs)
