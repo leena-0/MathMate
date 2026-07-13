@@ -54,14 +54,20 @@ def tutor_turn(problem: dict, message: str, hint_level: int = 1) -> dict:
     return GRAPH.invoke(state)
 
 
-async def run_tutor(req: ChatRequest):
+async def run_tutor(req: ChatRequest, result_holder: dict | None = None):
     """
     SSE 스트리밍용 async generator.
     핵심: 답 유출 방지 가드레일 때문에 '완성된 응답'을 leak_verify로 먼저 검증한 뒤,
     검증을 통과한 텍스트만 토큰(글자 조각) 단위로 흘려보낸다(빠른 타이핑 UX).
+
+    result_holder를 넘기면, 최종 그래프 상태(diagnosis/solved 등)를 그 안에 채워준다.
+    LLM을 다시 호출하지 않고도 서비스 계층이 진척도를 기록할 수 있게 하기 위함.
     """
     problem = problem_repo.get_problem(req.problem_id)
     out = tutor_turn(problem, req.message)
+    if result_holder is not None:
+        result_holder.update(out)
+        result_holder["unit"] = problem["unit"]
     text = out.get("response", "")
 
     chunk = ""
