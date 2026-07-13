@@ -13,6 +13,7 @@ SOLAR_API_KEY = os.getenv("SOLAR_API_KEY") or os.getenv("UPSTAGE_API_KEY") or ""
 SOLAR_MODEL = os.getenv("SOLAR_MODEL", "solar-pro2")
 SOLAR_BASE_URL = os.getenv("SOLAR_BASE_URL", "https://api.upstage.ai/v1/solar")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "")          # 예: "gemini/gemini-2.0-flash"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "30"))          # 무한 대기 방지
 LLM_NUM_RETRIES = int(os.getenv("LLM_NUM_RETRIES", "2"))   # 일시적 오류 재시도
 
