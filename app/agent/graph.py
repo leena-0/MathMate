@@ -68,6 +68,8 @@ async def run_tutor(req: ChatRequest, result_holder: dict | None = None):
     if result_holder is not None:
         result_holder.update(out)
         result_holder["unit"] = problem["unit"]
+        result_holder["grade"] = problem.get("grade")
+        result_holder["semester"] = problem.get("semester")
     text = out.get("response", "")
 
     chunk = ""

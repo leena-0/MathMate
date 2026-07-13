@@ -3,13 +3,16 @@ from collections import defaultdict
 from app.db.supabase_client import get_client
 
 
-def record_attempt(user_id: int, problem_id: str, unit: str, hints_used: int, solved: bool) -> None:
+def record_attempt(user_id: int, problem_id: str, unit: str, hints_used: int, solved: bool,
+                    grade: int | None = None, semester: int | None = None) -> None:
     get_client().table("attempts").insert({
         "user_id": user_id,
         "problem_id": problem_id,
         "unit": unit,
         "hints_used": hints_used,
         "solved": solved,
+        "grade": grade,
+        "semester": semester,
     }).execute()
 
 
@@ -21,16 +24,15 @@ def _mastery_level(avg_hints: float) -> str:
     return "취약"
 
 
-def get_unit_mastery(user_id: int) -> list[dict]:
-    """단원별 '푼 문제 수 · 평균 힌트 사용량 · 숙련도'를 그때그때 집계한다."""
-    res = (
-        get_client()
-        .table("attempts")
-        .select("unit, hints_used")
-        .eq("user_id", user_id)
-        .eq("solved", True)
-        .execute()
-    )
+def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | None = None) -> list[dict]:
+    """단원별 '푼 문제 수 · 평균 힌트 사용량 · 숙련도'를 그때그때 집계한다.
+    grade/semester를 넘기면 그 학년·학기에 푼 문제만으로 좁혀서 집계한다."""
+    query = get_client().table("attempts").select("unit, hints_used").eq("user_id", user_id).eq("solved", True)
+    if grade is not None:
+        query = query.eq("grade", grade)
+    if semester is not None:
+        query = query.eq("semester", semester)
+    res = query.execute()
 
     by_unit: dict[str, list[int]] = defaultdict(list)
     for row in res.data:

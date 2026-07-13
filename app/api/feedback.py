@@ -7,7 +7,7 @@ router = APIRouter()
 
 
 @router.get("/feedback", response_model=FeedbackResponse)
-def get_feedback(user_id: int):
-    items = attempt_repo.get_unit_mastery(user_id)   # avg_hints_used 내림차순 정렬됨
+def get_feedback(user_id: int, grade: int | None = None, semester: int | None = None):
+    items = attempt_repo.get_unit_mastery(user_id, grade, semester)   # avg_hints_used 내림차순 정렬됨
     weakest = items[0]["unit"] if items else None
     return FeedbackResponse(items=items, weakest_unit=weakest)
