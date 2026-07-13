@@ -306,26 +306,27 @@ def render_study_page():
 
     labels = {p["id"]: f'{p["problem"][:24]}...' if len(p["problem"]) > 24 else p["problem"] for p in problems}
 
-    def on_problem_change():
-        st.session_state.messages = []
-
     problem_id = st.selectbox(
         "어떤 문제를 풀어볼까요?",
         options=list(labels.keys()),
         format_func=lambda pid: labels[pid],
         key="problem_id",
-        on_change=on_problem_change,
     )
+
+    # 문제가 바뀐 이유(직접 선택/학년·학기·단원 변경/새 문제 보기 버튼)에 상관없이,
+    # 이전에 보여준 문제와 달라졌으면 채팅 기록을 초기화한다.
+    if st.session_state.get("_last_problem_id") != problem_id:
+        st.session_state.messages = []
+        st.session_state._last_problem_id = problem_id
 
     current_problem = next(p for p in problems if p["id"] == problem_id)
     st.markdown(f'<div class="problem-card">📝 {current_problem["problem"]}</div>', unsafe_allow_html=True)
 
-    if st.button("🔄 새 문제 보기"):
-        ids = list(labels.keys())
-        idx = ids.index(problem_id)
+    def _go_to_next_problem(ids):
+        idx = ids.index(st.session_state.problem_id)
         st.session_state.problem_id = ids[(idx + 1) % len(ids)]
-        st.session_state.messages = []
-        st.rerun()
+
+    st.button("🔄 새 문제 보기", on_click=_go_to_next_problem, args=(list(labels.keys()),))
 
     for msg in st.session_state.messages:
         render_bubble(msg["role"], msg["content"])
