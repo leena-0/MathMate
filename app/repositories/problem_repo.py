@@ -27,19 +27,41 @@ def _load() -> list[dict]:
 _PROBLEMS: list[dict] = _load()
 
 
-def get_problem(problem_id: str | None = None, unit: str | None = None,
-                difficulty: str | None = None) -> dict:
+def _matches(p: dict, unit=None, difficulty=None, grade=None, semester=None) -> bool:
+    if unit and p["unit"] != unit:
+        return False
+    if difficulty and p["difficulty"] != difficulty:
+        return False
+    if grade and p.get("grade") != grade:
+        return False
+    if semester and p.get("semester") != semester:
+        return False
+    return True
+
+
+def get_problem(problem_id: str | None = None, unit: str | None = None, difficulty: str | None = None,
+                grade: int | None = None, semester: int | None = None) -> dict:
     for p in _PROBLEMS:
         if problem_id and p["id"] != problem_id:
             continue
-        if unit and p["unit"] != unit:
-            continue
-        if difficulty and p["difficulty"] != difficulty:
-            continue
-        return p
+        if _matches(p, unit, difficulty, grade, semester):
+            return p
     return _PROBLEMS[0]
 
 
-def list_problems(unit: str | None = None, difficulty: str | None = None) -> list[dict]:
-    return [p for p in _PROBLEMS
-            if (not unit or p["unit"] == unit) and (not difficulty or p["difficulty"] == difficulty)]
+def list_problems(unit: str | None = None, difficulty: str | None = None,
+                   grade: int | None = None, semester: int | None = None) -> list[dict]:
+    return [p for p in _PROBLEMS if _matches(p, unit, difficulty, grade, semester)]
+
+
+def list_semesters(grade: int | None = None) -> list[int]:
+    """주어진 학년(없으면 전체)에 실제로 존재하는 학기 목록."""
+    return sorted({p["semester"] for p in _PROBLEMS
+                   if p.get("semester") is not None and (not grade or p.get("grade") == grade)})
+
+
+def list_units(grade: int | None = None, semester: int | None = None) -> list[str]:
+    """주어진 학년·학기(없으면 전체)에 실제로 존재하는 단원 목록."""
+    return sorted({p["unit"] for p in _PROBLEMS
+                   if (not grade or p.get("grade") == grade)
+                   and (not semester or p.get("semester") == semester)})
