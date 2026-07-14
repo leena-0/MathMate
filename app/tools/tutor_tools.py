@@ -19,7 +19,8 @@ _VALID_INTENTS = {"normal", "answer_seeking", "off_topic"}
 def classify_intent(message: str, problem: dict) -> str:
     """의도 분류: normal | answer_seeking | off_topic (입력단 가드레일).
     현재 푸는 '문제'를 함께 넘겨, 짧은 답('9' 등)을 잡담으로 오판하지 않게 한다."""
-    data = llm_client.chat_json(prompts.INTENT_SYS, prompts.intent_user(problem, message))
+    data = llm_client.chat_json(prompts.INTENT_SYS, prompts.intent_user(problem, message),
+                                 trace_name="intent_classify")
     if data and data.get("intent") in _VALID_INTENTS:
         return data["intent"]
     # --- Mock 폴백 (문제 맥락 없이 규칙만) ---
@@ -32,7 +33,8 @@ def classify_intent(message: str, problem: dict) -> str:
 
 def diagnose_step(problem: dict, attempt: str) -> Diagnosis:
     """오답/막힌 지점 진단."""
-    data = llm_client.chat_json(prompts.DIAGNOSE_SYS, prompts.diagnose_user(problem, attempt))
+    data = llm_client.chat_json(prompts.DIAGNOSE_SYS, prompts.diagnose_user(problem, attempt),
+                                 trace_name="diagnose_step")
     if data is not None and "is_correct" in data:
         return Diagnosis(
             stuck_point=str(data.get("stuck_point", "")),
@@ -53,7 +55,8 @@ def generate_hint(problem: dict, hint_level: int) -> Hint:
     """hint_level(1~3)에 맞춘 소크라테스식 힌트. LLM 있으면 자연스럽게 생성, 없으면 데이터 힌트 사용."""
     level = max(1, min(hint_level, 3))
     ref = problem["hint_by_level"][str(level)]
-    txt = llm_client.chat_text(prompts.HINT_SYS, prompts.hint_user(problem, ref, level))
+    txt = llm_client.chat_text(prompts.HINT_SYS, prompts.hint_user(problem, ref, level),
+                                trace_name="generate_hint")
     hint_text = txt.strip() if txt else ref
     return Hint(hint_text=hint_text, level=level, contains_answer=False)
 

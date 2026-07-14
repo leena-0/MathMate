@@ -1,0 +1,55 @@
+"""진척도(attempts) 저장소. 정답을 맞힌(solved) 시도만 기록해 '완료한 문제' 기준으로 집계한다."""
+from collections import defaultdict
+from app.db.supabase_client import get_client
+
+
+def record_attempt(user_id: int, problem_id: str, unit: str, hints_used: int, solved: bool,
+                    grade: int | None = None, semester: int | None = None) -> None:
+    get_client().table("attempts").insert({
+        "user_id": user_id,
+        "problem_id": problem_id,
+        "unit": unit,
+        "hints_used": hints_used,
+        "solved": solved,
+        "grade": grade,
+        "semester": semester,
+    }).execute()
+
+
+def _mastery_level(avg_hints: float) -> str:
+    if avg_hints < 1.0:
+        return "잘함"
+    if avg_hints < 2.0:
+        return "보통"
+    return "취약"
+
+
+def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | None = None) -> list[dict]:
+    """단원별 '푼 문제 수 · 평균 힌트 사용량 · 숙련도'를 그때그때 집계한다.
+    grade/semester를 넘기면 그 학년·학기에 푼 문제만으로 좁혀서 집계한다."""
+    query = get_client().table("attempts").select("unit, hints_used").eq("user_id", user_id).eq("solved", True)
+    if grade is not None:
+        query = query.eq("grade", grade)
+    if semester is not None:
+        query = query.eq("semester", semester)
+    res = query.execute()
+
+    by_unit: dict[str, list[int]] = defaultdict(list)
+    for row in res.data:
+        by_unit[row["unit"]].append(row["hints_used"])
+
+    items = []
+    for unit, hints in by_unit.items():
+        avg_hints = sum(hints) / len(hints)
+        items.append({
+            "unit": unit,
+            "problems_attempted": len(hints),
+            "avg_hints_used": round(avg_hints, 1),
+            "mastery_level": _mastery_level(avg_hints),
+            "_avg_hints_raw": avg_hints,   # 반올림 전 값 — 정렬용, 반환 직전에 제거
+        })
+    # 평균 힌트가 높은(약한) 순, 반올림 때문에 동점이면 문제 수가 적은(연습 덜 된) 쪽을 우선한다.
+    items.sort(key=lambda x: (-x["_avg_hints_raw"], x["problems_attempted"]))
+    for item in items:
+        del item["_avg_hints_raw"]
+    return items

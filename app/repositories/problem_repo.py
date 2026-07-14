@@ -87,26 +87,49 @@ def reload() -> int:
     return len(_PROBLEMS)
 
 
-def get_problem(problem_id: str | None = None, unit: str | None = None,
-                difficulty: str | None = None) -> dict:
+def _matches(p: dict, unit=None, difficulty=None, grade=None, semester=None) -> bool:
+    if unit and p["unit"] != unit:
+        return False
+    if difficulty and p["difficulty"] != difficulty:
+        return False
+    if grade and p.get("grade") != grade:
+        return False
+    if semester and p.get("semester") != semester:
+        return False
+    return True
+
+
+def get_problem(problem_id: str | None = None, unit: str | None = None, difficulty: str | None = None,
+                grade: int | None = None, semester: int | None = None) -> dict:
     for p in _PROBLEMS:
         if problem_id and p["id"] != problem_id:
             continue
-        if unit and p["unit"] != unit:
-            continue
-        if difficulty and p["difficulty"] != difficulty:
-            continue
-        return p
+        if _matches(p, unit, difficulty, grade, semester):
+            return p
     return _PROBLEMS[0]
 
 
-def list_problems(unit: str | None = None, difficulty: str | None = None) -> list[dict]:
+def list_problems(unit: str | None = None, difficulty: str | None = None,
+                   grade: int | None = None, semester: int | None = None) -> list[dict]:
     """내부용: 전체 필드 포함(정답 포함). API로 그대로 내보내지 말 것."""
-    return [p for p in _PROBLEMS
-            if (not unit or p["unit"] == unit) and (not difficulty or p["difficulty"] == difficulty)]
+    return [p for p in _PROBLEMS if _matches(p, unit, difficulty, grade, semester)]
 
 
-def list_problems_public(unit: str | None = None, difficulty: str | None = None) -> list[dict]:
+def list_problems_public(unit: str | None = None, difficulty: str | None = None,
+                          grade: int | None = None, semester: int | None = None) -> list[dict]:
     """외부용: 정답·힌트·풀이를 제외한 안전 뷰."""
     return [{k: p.get(k) for k in _PUBLIC_FIELDS}
-            for p in list_problems(unit, difficulty)]
+            for p in list_problems(unit, difficulty, grade, semester)]
+
+
+def list_semesters(grade: int | None = None) -> list[int]:
+    """주어진 학년(없으면 전체)에 실제로 존재하는 학기 목록."""
+    return sorted({p["semester"] for p in _PROBLEMS
+                   if p.get("semester") is not None and (not grade or p.get("grade") == grade)})
+
+
+def list_units(grade: int | None = None, semester: int | None = None) -> list[str]:
+    """주어진 학년·학기(없으면 전체)에 실제로 존재하는 단원 목록."""
+    return sorted({p["unit"] for p in _PROBLEMS
+                   if (not grade or p.get("grade") == grade)
+                   and (not semester or p.get("semester") == semester)})

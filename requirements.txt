@@ -6,11 +6,9 @@ pydantic
 sse-starlette
 httpx
 streamlit
-psycopg2-binary
-sqlalchemy
+supabase
 python-dotenv
 pytest
 deepeval
 litellm
-datasets
-supabase
+langfuse<3
