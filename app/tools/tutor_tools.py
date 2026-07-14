@@ -32,30 +32,46 @@ def classify_intent(message: str, problem: dict) -> str:
 
 
 def diagnose_step(problem: dict, attempt: str) -> Diagnosis:
-    """오답/막힌 지점 진단."""
+    """오답/막힌 지점 진단.
+
+    이중검증: '정답으로 판정'된 경우에만 2차로 "여러 후보를 나열해서 우연히 맞은 건 아닌지"
+    다시 확인한다(프롬프트 규칙 1차 + 별도 모델 호출 2차). 정답을 여러 개 나열해서
+    그 중 하나가 얻어걸려 통과하는 걸 막기 위함.
+    """
     data = llm_client.chat_json(prompts.DIAGNOSE_SYS, prompts.diagnose_user(problem, attempt),
                                  trace_name="diagnose_step")
     if data is not None and "is_correct" in data:
-        return Diagnosis(
-            stuck_point=str(data.get("stuck_point", "")),
-            is_correct=bool(data.get("is_correct")),
-            solved=bool(data.get("solved")),
-        )
+        is_correct = bool(data.get("is_correct"))
+        solved = bool(data.get("solved"))
+        stuck_point = str(data.get("stuck_point", ""))
+        if is_correct or solved:
+            confirm = llm_client.chat_json(prompts.CONFIRM_SYS, prompts.confirm_user(problem, attempt),
+                                            trace_name="confirm_single_answer")
+            if confirm is not None and confirm.get("single_confident_answer") is False:
+                is_correct, solved = False, False
+                stuck_point = stuck_point or "여러 값을 나열해서 답한 것 같아요"
+        return Diagnosis(stuck_point=stuck_point, is_correct=is_correct, solved=solved)
     # --- Mock 폴백 (규칙 휴리스틱) ---
     ans = str(problem["answer"]).replace(" ", "")
     text = attempt.replace(" ", "")
-    if ans in text and "묶음" not in text:
-        return Diagnosis(stuck_point="", is_correct=True, solved=True)
-    if "묶음" in text and ans in text:
+    nums = re.findall(r"\d+", text)
+    listed_many_candidates = len(set(nums)) > 1   # 서로 다른 숫자를 여러 개 나열 → 확신 없는 답으로 간주
+    ans_present = ans in text
+    if ans_present and not listed_many_candidates:
+        if "묶음" not in text:
+            return Diagnosis(stuck_point="", is_correct=True, solved=True)
         return Diagnosis(stuck_point="", is_correct=True, solved=False)
+    if listed_many_candidates and ans_present:
+        return Diagnosis(stuck_point="여러 값을 나열해서 답한 것 같아요", is_correct=False, solved=False)
     return Diagnosis(stuck_point="나눗셈의 의미를 아직 못 잡음", is_correct=False, solved=False)
 
 
-def generate_hint(problem: dict, hint_level: int) -> Hint:
-    """hint_level(1~3)에 맞춘 소크라테스식 힌트. LLM 있으면 자연스럽게 생성, 없으면 데이터 힌트 사용."""
+def generate_hint(problem: dict, hint_level: int, stuck_point: str = "", student_attempt: str = "") -> Hint:
+    """hint_level(1~3)에 맞춘 소크라테스식 힌트. LLM 있으면 학생의 실제 답/막힌 지점을 반영해
+    자연스럽게 생성하고, 없으면 데이터 힌트를 그대로 사용한다."""
     level = max(1, min(hint_level, 3))
     ref = problem["hint_by_level"][str(level)]
-    txt = llm_client.chat_text(prompts.HINT_SYS, prompts.hint_user(problem, ref, level),
+    txt = llm_client.chat_text(prompts.HINT_SYS, prompts.hint_user(problem, ref, level, stuck_point, student_attempt),
                                 trace_name="generate_hint")
     hint_text = txt.strip() if txt else ref
     return Hint(hint_text=hint_text, level=level, contains_answer=False)

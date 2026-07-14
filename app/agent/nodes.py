@@ -6,6 +6,20 @@ from app.agent.state import TutorState
 from app.tools import tutor_tools as tools
 
 
+def _format_solution_steps(steps: list) -> str:
+    """solution_steps는 문자열 리스트("1. ~")이거나 예전 픽스처처럼 {"action","result"} dict 리스트일 수 있다."""
+    lines = []
+    for s in steps or []:
+        if isinstance(s, dict):
+            action, result = s.get("action", ""), s.get("result", "")
+            text = f"{action}: {result}" if action and result else (action or result)
+        else:
+            text = str(s)
+        if text:
+            lines.append(f"- {text}")
+    return "\n".join(lines)
+
+
 def intent_classify(state: TutorState) -> dict:
     # 현재 푸는 문제를 함께 넘겨 맥락 기반으로 분류 (짧은 답을 잡담으로 오판 방지)
     return {"intent": tools.classify_intent(state["student_attempt"], state["problem"])}
@@ -29,10 +43,18 @@ def diagnose(state: TutorState) -> dict:
 
 
 def generate_hint(state: TutorState) -> dict:
-    """아직 못 풀었을 때 → 다음 한 걸음 힌트."""
+    """아직 못 풀었을 때 → 학생이 실제로 막힌 지점에 맞춘 다음 한 걸음 힌트.
+
+    hint_level에는 '이번에 실제로 준 단계'를 그대로 남긴다(다음 단계로 미리 올리지 않음) —
+    progress_repo가 이 값을 그대로 max_hint_level로 저장해 다음 턴의 시작점을 정하기 때문에,
+    여기서 +1을 하면 한 단계를 건너뛰고 힌트 3단계가 조기 소진돼버린다.
+    """
     level = state.get("hint_level", 1)
-    h = tools.generate_hint(state["problem"], level)
-    return {"response": h.hint_text, "hint": h.hint_text, "hint_level": min(level + 1, 3)}
+    diagnosis = state.get("diagnosis") or {}
+    h = tools.generate_hint(state["problem"], level,
+                             stuck_point=diagnosis.get("stuck_point", ""),
+                             student_attempt=state.get("student_attempt", ""))
+    return {"response": h.hint_text, "hint": h.hint_text, "hint_level": level}
 
 
 def praise_next(state: TutorState) -> dict:
@@ -40,7 +62,22 @@ def praise_next(state: TutorState) -> dict:
 
 
 def final_praise(state: TutorState) -> dict:
-    return {"response": "정확해요! 스스로 끝까지 풀어냈네요. 정말 잘했어요!", "solved": True}
+    """최종 정답 도달 → 축하 + 해설(어떻게 풀 수 있는지)을 함께 보여준다."""
+    steps_text = _format_solution_steps(state["problem"].get("solution_steps"))
+    response = "정확해요! 스스로 끝까지 풀어냈네요. 정말 잘했어요!"
+    if steps_text:
+        response += f"\n\n이렇게 풀 수 있어요:\n{steps_text}"
+    return {"response": response, "solved": True}
+
+
+def reveal_answer(state: TutorState) -> dict:
+    """힌트 3단계를 다 주고도 다음 시도에서 또 틀렸을 때 → 정답과 해설을 공개하고 마무리한다."""
+    problem = state["problem"]
+    steps_text = _format_solution_steps(problem.get("solution_steps"))
+    response = f"이번엔 정답을 알려줄게요. 정답은 {problem['answer']}이에요."
+    if steps_text:
+        response += f"\n\n어떻게 풀 수 있는지 같이 볼까요?\n{steps_text}"
+    return {"response": response, "revealed": True}
 
 
 def leak_verify(state: TutorState) -> dict:
@@ -65,4 +102,8 @@ def route_after_diagnose(state: TutorState) -> str:
     d = state["diagnosis"]
     if d["solved"]:
         return "final"
-    return "praise" if d["is_correct"] else "hint"
+    if d["is_correct"]:
+        return "praise"
+    if state.get("prior_hint_level", 0) >= 3:
+        return "reveal"   # 힌트 3단계를 이미 다 줬는데 또 틀림 → 정답 공개
+    return "hint"

@@ -46,6 +46,26 @@ def record_turn(student_id: str, problem_id: str, turn: dict) -> None:
         log.warning("진척도 기록 실패(무시): %s", e)
 
 
+def get_hint_level(student_id: str, problem_id: str) -> int:
+    """이 학생·문제에 대해 지금까지 도달한 최고 힌트 단계(기록 없으면 0).
+
+    대화 자체는 턴마다 새로 시작(stateless)하지만, 힌트 단계는 이 값을 읽어
+    이어서 진행한다 — 매 턴 LangGraph 체크포인터 없이도 "3단계까지 다 줬는지"를 알 수 있다.
+    """
+    client = supabase_client.get_client()
+    if client is None or not student_id or not problem_id:
+        return 0
+    try:
+        res = (client.table("progress").select("max_hint_level")
+               .eq("student_id", student_id).eq("problem_id", problem_id)
+               .limit(1).execute())
+        rows = res.data or []
+        return int(rows[0]["max_hint_level"]) if rows else 0
+    except Exception as e:
+        log.warning("힌트 단계 조회 실패(0으로 간주): %s", e)
+        return 0
+
+
 def get_progress(student_id: str) -> list[dict]:
     """특정 학생의 문제별 진척도 목록."""
     client = supabase_client.get_client()
