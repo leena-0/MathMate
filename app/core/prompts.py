@@ -42,10 +42,13 @@ def diagnose_user(problem: dict, attempt: str) -> str:
     )
 
 
-def hint_user(problem: dict, ref_hint: str, level: int) -> str:
+def hint_user(problem: dict, ref_hint: str, level: int, stuck_point: str = "") -> str:
+    stuck_line = f"학생이 막힌 지점(진단 결과): {stuck_point}\n" if stuck_point else ""
     return (
         f"문제: {problem['problem']}\n"
         f"참고 힌트(이 수준에 맞게 활용하되 정답 숫자는 넣지 말 것): {ref_hint}\n"
         f"힌트 단계: {level}/3 (클수록 더 구체적)\n"
+        f"{stuck_line}"
+        "참고 힌트의 구체성 수준은 유지하되, 막힌 지점이 있으면 그걸 콕 짚어서 "
         "학생이 다음 한 걸음을 스스로 떠올리도록 짧게 유도하세요."
     )
