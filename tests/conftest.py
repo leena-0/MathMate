@@ -2,10 +2,21 @@
 import pytest
 from app.core import config
 
+# problem_repo는 모듈 import 시점에 문제은행을 한 번만 메모리에 올린다.
+# .env에 실제 Supabase 키가 있으면 테스트 모듈(들이 problem_repo.get_problem("arith_001") 등을
+# 모듈 최상단에서 호출)이 import되는 순간 이미 Supabase의 실제 문제로 채워져,
+# 아래 force_mock 픽스처(테스트 함수 실행 시점에만 적용)로는 되돌릴 수 없다.
+# 그래서 테스트 모듈이 import되기 전에 여기서 미리 로컬 JSON(픽스처 포함)으로 재적재해둔다.
+config.USE_SUPABASE = False
+from app.repositories import problem_repo  # noqa: E402
+problem_repo.reload()
+
 
 @pytest.fixture(autouse=True)
 def force_mock(monkeypatch):
     monkeypatch.setattr(config, "USE_LLM", False)
+    # 테스트는 네트워크(Supabase) 없이 로컬 JSON으로만 결정론적으로 실행
+    monkeypatch.setattr(config, "USE_SUPABASE", False)
 
 
 class _FakeResult:

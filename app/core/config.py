@@ -25,7 +25,14 @@ LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 LANGFUSE_ENABLED = bool(LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY)
 
-# Supabase — 진척도(users/attempts) 저장용 REST 클라이언트. 키 없으면 비활성.
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+# --- Supabase ---
+# URL 끝의 슬래시는 제거(클라이언트가 이중 슬래시를 싫어함)
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or ""                    # publishable(anon) — users/attempts REST 클라이언트(app/db)용
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or ""    # service_role — 서버 전용, RLS 우회
+# 백엔드는 신뢰된 서버이므로 service key를 우선 사용(없으면 publishable로 폴백)
+SUPABASE_BACKEND_KEY = SUPABASE_SERVICE_KEY or SUPABASE_KEY
+# users/attempts(프로필·숙련도) 기능 활성 조건 — app/db/supabase_client.py가 사용
 SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_KEY)
+# problems/progress(문제은행·힌트사용량) 기능 활성 조건 — app/repositories/supabase_client.py가 사용
+USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_BACKEND_KEY)

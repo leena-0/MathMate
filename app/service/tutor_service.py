@@ -3,17 +3,20 @@ import logging
 from app.schemas.chat import ChatRequest
 from app.agent.graph import run_tutor
 from app.core import config
-from app.repositories import attempt_repo
+from app.repositories import attempt_repo, progress_repo
 
 log = logging.getLogger(__name__)
 
 
 async def handle_turn(req: ChatRequest):
     """튜터 한 턴 처리 오케스트레이션. agent 실행 결과를 그대로 스트리밍하고,
-    문제를 풀어냈으면(solved) 진척도를 기록한다."""
+    턴마다 힌트 사용량을, 문제를 풀어냈으면(solved) 단원별 숙련도를 기록한다."""
     state: dict = {}
     async for chunk in run_tutor(req, result_holder=state):
         yield chunk
+
+    # 힌트 사용량 KPI 누적. Supabase 없으면 내부에서 조용히 무시된다.
+    progress_repo.record_turn(req.student_id, req.problem_id, state)
 
     if config.SUPABASE_ENABLED and state.get("solved"):
         try:

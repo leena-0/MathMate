@@ -1,0 +1,47 @@
+-- MathMate Supabase 스키마
+-- 사용법: Supabase 대시보드 > SQL Editor 에 붙여넣고 [Run].
+-- (백엔드는 service_role 키로 접속 → RLS를 우회하므로 별도 정책 없이도 읽기/쓰기 가능.
+--  RLS는 켜 두어, 혹시 publishable 키가 노출돼도 정답이 직접 조회되지 않게 막는다.)
+
+-- 1) 문제은행 -------------------------------------------------------------
+create table if not exists public.problems (
+    id             text primary key,          -- 예: p_0001
+    grade          int,
+    semester       int,
+    unit           text,
+    difficulty     text,                       -- 쉬움 | 중간 | 어려움
+    problem        text not null,
+    answer         text not null,              -- 정답(학생/프론트에 절대 노출 금지)
+    hint1          text,
+    hint2          text,
+    hint3          text,
+    solution_steps jsonb default '[]'::jsonb,
+    next_question  text,
+    source         text,                       -- orca | generated
+    created_at     timestamptz default now()
+);
+
+-- 조회 속도용 인덱스
+create index if not exists idx_problems_unit  on public.problems (grade, semester, unit);
+create index if not exists idx_problems_diff  on public.problems (difficulty);
+
+alter table public.problems enable row level security;
+-- (정책을 만들지 않음 = anon(publishable) 키로는 접근 불가. 백엔드 service 키만 접근.)
+
+-- 2) 학습 진척도 ----------------------------------------------------------
+-- 핵심 KPI = '힌트 사용량'. 학생×문제 단위로 누적한다.
+create table if not exists public.progress (
+    id             bigint generated always as identity primary key,
+    student_id     text not null,
+    problem_id     text not null references public.problems(id),
+    attempts       int  not null default 0,    -- 이 문제에 시도한 턴 수
+    hints_used     int  not null default 0,    -- 받은 힌트 개수(누적) = 핵심 지표
+    max_hint_level int  not null default 0,    -- 도달한 최고 힌트 단계(1~3)
+    solved         boolean not null default false,
+    updated_at     timestamptz default now(),
+    unique (student_id, problem_id)            -- 학생×문제당 한 행(upsert 기준)
+);
+
+create index if not exists idx_progress_student on public.progress (student_id);
+
+alter table public.progress enable row level security;

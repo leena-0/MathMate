@@ -1,206 +1,474 @@
 """
-data/scripts/build_problem_bank.py
+data/scripts/build_problem_bank.py  —  문제은행 통합 구축 파이프라인
 
-Hugging Face orca-math(한국어)에서 초등 고학년(4~6) 문장제를 선별하고,
-Solar(LLM)로 [학년·학기·단원·난이도]를 자동 태깅 + 소크라테스식 힌트(hint_by_level)를 생성해
-앱이 쓰는 data/problems.json 형식으로 저장한다. (사람 검수용 CSV도 함께 출력)
+1) orca-math(HF)를 훑어 '단원 개념 정의(UNIT_GUIDE)'에 정확히 맞는 것만 선별 (단원×난이도별 상한)
+2) 그림 필요 단원 + 난이도별 부족분을 Solar로 생성 (각 단원의 개념 정의를 프롬프트에 주입)
+3) 단원 순서로 정렬해 data/problems.json + data/elementary_math_problems.csv 저장 (source 표시)
 
-멘토링 반영:
-- 난이도는 쎈수학 A/B/C 기준(A=쉬움, B=중간, C=어려움)을 프롬프트에 명시.
-- "LLM 자동 태깅 → 사람 검수" 흐름: 결과를 review_problems.csv로 뽑아 사람이 검수 후 사용.
+특징:
+- 단원명만이 아니라 UNIT_GUIDE(단원별 핵심 개념·주의)를 태깅/생성에 주입해 오매핑을 줄임
+  (예: "규칙과 대응"에 경우의 수 문제가 들어가는 것 방지)
+- 난이도(쉬움/중간/어려움)를 단원×난이도별 목표로 균형 있게: --per-unit 30 이면 10/10/10
+- '검토(scan)'와 'LLM 태깅'을 분리: orca를 셔플 스트리밍으로 많이(=골고루) 훑되,
+  태깅은 목표 버킷이 찰 때까지만 하고 조기 종료(early-stop) → 검토는 늘려도 태깅 비용은 안 늘어남
+- LLM 호출을 --workers 개씩 '병렬'로 실행(속도↑), 진행은 누적 개수만 한 줄 표시
 
-실행 (프로젝트 루트에서, .env에 SOLAR_API_KEY 필요):
-  python data/scripts/build_problem_bank.py --dry-run          # HF 없이 내장 샘플 2개로 파이프라인·태깅 점검
-  python data/scripts/build_problem_bank.py --keep 35 --scan 500   # 실제: 30~40개 구축
-  # 나중에 대용량 확장: --keep 300 --scan 5000 처럼 숫자만 키우면 됨
+실행 (프로젝트 루트, .env에 SOLAR_API_KEY):
+  python data/scripts/build_problem_bank.py --grades 5 --per-unit 6 --scan 3000        # 소량 점검
+  python data/scripts/build_problem_bank.py --grades 4,5,6 --per-unit 30 --scan 60000  # 많이 훑고 필요한 만큼만 태깅
+  python data/scripts/build_problem_bank.py --grades 5 --per-unit 30 --scan 20000 --no-generate  # 선별만
 
-의존성: datasets, litellm (requirements.txt)
+주요 옵션:
+  --scan      orca에서 '검토'할 문항 수(값쌈, 네트워크 스트리밍). 크게 줘도 됨.
+  --max-tags  LLM 태깅 호출 상한(비쌈). 0이면 무제한(버킷 충족/정체 시 자동 종료).
+  --seed      orca 셔플 시드. 바꾸면 다른 표본을 봄(다양성).
 """
 import argparse
 import csv
 import json
 import logging
 import os
+import re
 import sys
+import threading
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-# 프로젝트 루트를 import 경로에 추가 (python data/scripts/build_problem_bank.py 로 실행)
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
 
-from app.core import llm_client  # noqa: E402  (LiteLLM Solar 래퍼: retry/fallback/타임아웃 내장)
+from app.core import llm_client  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger("build_bank")
+logging.getLogger("app.core.llm_client").setLevel(logging.ERROR)
+log = logging.getLogger("build_problem_bank")
 
 DATASET = "kuotient/orca-math-word-problems-193k-korean"
 DATA_DIR = os.path.join(ROOT, "data")
+DIFFICULTIES = ["쉬움", "중간", "어려움"]
 
-# 초등 4~6학년 '문장제'에 잘 맞는 단원(연산/응용 위주). LLM이 이 중에서 고르거나 "기타".
-UNITS = [
-    "곱셈과 나눗셈", "큰 수", "규칙 찾기",
-    "자연수의 혼합 계산", "약수와 배수", "규칙과 대응", "평균과 가능성",
-    "분수의 덧셈과 뺄셈", "분수의 곱셈", "분수의 나눗셈",
-    "소수의 덧셈과 뺄셈", "소수의 곱셈", "소수의 나눗셈",
-    "비와 비율", "비례식과 비례배분",
-]
+CURRICULUM = {
+    4: {1: ["큰 수", "각도", "곱셈과 나눗셈", "평면도형의 이동", "막대그래프", "규칙 찾기"],
+        2: ["분수의 덧셈과 뺄셈", "삼각형", "소수의 덧셈과 뺄셈", "사각형", "꺾은선그래프", "다각형"]},
+    5: {1: ["자연수의 혼합 계산", "약수와 배수", "규칙과 대응", "약분과 통분", "분수의 덧셈과 뺄셈", "다각형의 둘레와 넓이"],
+        2: ["수의 범위와 어림하기", "분수의 곱셈", "합동과 대칭", "소수의 곱셈", "직육면체", "평균과 가능성"]},
+    6: {1: ["분수의 나눗셈", "각기둥과 각뿔", "소수의 나눗셈", "비와 비율", "여러 가지 그래프", "직육면체의 겉넓이와 부피"],
+        2: ["분수의 나눗셈", "소수의 나눗셈", "공간과 입체", "비례식과 비례배분", "원의 넓이", "원기둥, 원뿔, 구"]},
+}
+
+# 단원별 핵심 개념(+ 헷갈리기 쉬운 것 명시). 태깅/생성 프롬프트에 주입한다.
+UNIT_GUIDE = {
+    "큰 수": "만·억·조 단위 큰 수의 자릿값, 읽고 쓰기, 뛰어 세기, 크기 비교",
+    "각도": "각의 크기(도) 재기·그리기, 예각·직각·둔각, 각도의 합과 차, 삼각형·사각형 내각의 합",
+    "곱셈과 나눗셈": "(세 자리)×(몇십·두 자리), (몇백몇십·세 자리)÷(몇십·두 자리) 계산과 활용 문장제",
+    "평면도형의 이동": "도형을 밀기·뒤집기·돌리기 한 뒤의 모양, 무늬 만들기",
+    "막대그래프": "막대그래프를 읽고 해석·그리기 (항목별 수량 비교)",
+    "규칙 찾기": "수 배열·도형 배열·계산식에 숨은 '한 가지' 규칙을 찾아 다음을 예측 (두 양의 대응관계와는 다름)",
+    "분수의 덧셈과 뺄셈": "분모가 같은 진분수·대분수의 덧셈·뺄셈(4학년) / 분모가 다른 진분수·대분수의 덧셈·뺄셈, 통분(5학년)",
+    "삼각형": "변 길이로 이등변·정삼각형, 각 크기로 예각·직각·둔각삼각형 분류와 성질",
+    "소수의 덧셈과 뺄셈": "소수 두·세 자리의 크기 비교와 덧셈·뺄셈(자릿수 맞추기)",
+    "사각형": "수직과 평행, 평행선 사이의 거리, 사다리꼴·평행사변형·마름모의 성질",
+    "꺾은선그래프": "꺾은선그래프를 읽고 해석·그리기 (시간에 따른 변화)",
+    "다각형": "다각형과 정다각형의 뜻, 대각선의 수, 모양 만들기",
+    "자연수의 혼합 계산": "+,-,×,÷와 괄호가 섞인 '자연수' 식의 계산 순서. ※ 분수·소수를 섞지 말 것",
+    "약수와 배수": "약수·배수, 공약수와 최대공약수, 공배수와 최소공배수",
+    "규칙과 대응": "두 양이 서로 짝지어 규칙적으로 변하는 '대응 관계'를 표로 찾고 식으로 나타내기(예: 식탁 수 □와 의자 수 △의 관계 △=□×4). 한 양이 정해지면 다른 양이 정해지는 함수적 관계. ※ 경우의 수·조합·집합(교집합·합집합)·단발성 곱셈 문제가 아님",
+    "약분과 통분": "크기가 같은 분수, 약분·기약분수, 통분·공통분모, 분수와 소수의 크기 비교",
+    "다각형의 둘레와 넓이": "정다각형·사각형의 둘레, 넓이 단위(1cm²·1m²·1km²), 직사각형·평행사변형·삼각형·마름모·사다리꼴의 넓이",
+    "수의 범위와 어림하기": "이상·이하·초과·미만으로 수의 범위 나타내기, 올림·버림·반올림",
+    "분수의 곱셈": "(분수)×(자연수), (자연수)×(분수), 진분수·대분수끼리의 곱셈",
+    "합동과 대칭": "포개어지는 합동인 도형과 성질, 선대칭도형·점대칭도형. ※ 좌표평면·무리수·방정식이 아닌 '도형' 문제",
+    "소수의 곱셈": "(소수)×(자연수), (자연수)×(소수), (소수)×(소수), 곱의 소수점 위치",
+    "직육면체": "직육면체·정육면체의 면·모서리·꼭짓점, 겨냥도, 전개도. ※ 겉넓이·부피는 6학년",
+    "평균과 가능성": "여러 자료의 평균 구하기, 일이 일어날 가능성을 말(불가능~확실)과 수(0~1)로 표현. ※ 경우의 수·순열·조합이 아님",
+    "분수의 나눗셈": "(자연수)÷(자연수)를 분수로 나타내기, (분수)÷(자연수), (분수)÷(분수), (자연수)÷(분수)",
+    "각기둥과 각뿔": "각기둥·각뿔의 구성요소(면·모서리·꼭짓점)와 전개도",
+    "소수의 나눗셈": "(소수)÷(자연수), (자연수)÷(자연수)의 소수 몫, (소수)÷(소수), 몫을 반올림하기",
+    "비와 비율": "두 수의 비(예: 3:4), 비율(기준량에 대한 비교하는 양), 백분율(%). ※ 비례식·비례배분은 별도 단원",
+    "여러 가지 그래프": "그림그래프·띠그래프·원그래프를 읽고 해석·그리기",
+    "직육면체의 겉넓이와 부피": "직육면체·정육면체의 겉넓이, 부피 단위(1cm³·1m³), 부피 구하기",
+    "공간과 입체": "쌓기나무로 쌓은 모양을 여러 방향에서 본 모양, 쌓기나무 개수 구하기",
+    "비례식과 비례배분": "비의 성질, 간단한 자연수의 비로 나타내기, 비례식(3:4=6:8) 풀기, 비례배분",
+    "원의 넓이": "원주율, 원주 구하기, 원의 넓이 구하기",
+    "원기둥, 원뿔, 구": "원기둥·원뿔·구의 뜻과 성질, 구성요소",
+}
+# 같은 단원명이 학기별로 다른 개념을 다루는 경우 (6학년 분수/소수의 나눗셈)
+GUIDE_OVERRIDE = {
+    (6, 1, "분수의 나눗셈"): "(자연수)÷(자연수)의 몫을 분수로 나타내기, (분수)÷(자연수)",
+    (6, 2, "분수의 나눗셈"): "분모가 같거나 다른 (분수)÷(분수), (자연수)÷(분수), (대분수)÷(분수)",
+    (6, 1, "소수의 나눗셈"): "(소수)÷(자연수), (자연수)÷(자연수)의 몫을 소수로, 몫의 소수점 위치",
+    (6, 2, "소수의 나눗셈"): "(소수)÷(소수), 나누어떨어지지 않는 나눗셈, 몫을 반올림하여 나타내기",
+}
+
+
+def get_guide(g, sem, unit):
+    return GUIDE_OVERRIDE.get((g, sem, unit)) or UNIT_GUIDE.get(unit, "")
+
+
+FIGURE_DEPENDENT = {
+    "각도", "평면도형의 이동", "삼각형", "사각형", "다각형", "막대그래프", "꺾은선그래프",
+    "합동과 대칭", "직육면체", "각기둥과 각뿔", "여러 가지 그래프", "공간과 입체", "원기둥, 원뿔, 구",
+}
+_GUIDE_BLOCK = "\n".join(f"- {u}: {d}" for u, d in UNIT_GUIDE.items())
+_RULES = ("초등 해당 학년 범위 안. 방정식·미지수 문자식·수열 공식·좌표평면·무리수(√)·음수 금지. "
+          "정답은 반드시 '하나의 값'이어야 하며, 여러 개를 동시에 묻거나 '만약 ~라면' 같은 추가 질문을 문제 본문에 넣지 말 것.")
 
 TAG_SYS = (
-    "너는 초등 수학 데이터 큐레이터다. 주어진 문장제(문제와 원본 풀이/정답)를 보고 "
-    "초등 4~6학년 학습용으로 적합한지 판단하고 메타데이터를 붙여 JSON만 출력한다.\n\n"
-    "[난이도 기준 — 쎈수학 A/B/C]\n"
-    "- \"쉬움\"(A): 개념 확인·한 단계 단순 계산\n"
-    "- \"중간\"(B): 두세 단계 계산이 필요한 응용 문장제\n"
-    "- \"어려움\"(C): 여러 조건·심화 사고가 필요한 문제\n\n"
-    "[단원] 아래 중 가장 알맞은 하나를 고르고, 없으면 \"기타\":\n"
-    + ", ".join(UNITS) + "\n\n"
-    "[출력 JSON 스키마]\n"
-    "{\n"
-    '  "usable": true/false,   // 초등 4~6 문장제로 적합? (범위 밖·오류·이상하면 false)\n'
-    '  "grade": 4|5|6,\n'
-    '  "semester": 1|2,\n'
-    '  "unit": "<위 목록 중 하나 또는 기타>",\n'
-    '  "difficulty": "쉬움"|"중간"|"어려움",\n'
-    '  "problem": "<자연스러운 한국어로 정리한 문제 지문>",\n'
-    '  "answer": "<최종 정답만 간단히. 예: 9명>",\n'
-    '  "solution_steps": ["단계1", "단계2"],\n'
-    '  "hint_by_level": {"1": "약한 힌트", "2": "중간 힌트", "3": "구체 힌트"},\n'
-    '  "next_question": "정답 직전에 던질 유도 질문"\n'
-    "}\n\n"
-    "[절대 규칙] hint_by_level 과 next_question 에는 최종 정답(숫자·값)을 넣지 마라. JSON만 출력."
+    "너는 초등 수학 데이터 큐레이터다. 문장제를 보고 아래 [단원 정의] 중 개념이 '정확히' 일치하는 단원으로만 태깅해 JSON만 출력한다.\n"
+    "개념이 애매하거나 방정식·미지수 문자식·수열 공식·좌표평면·무리수(√)·음수에 해당하면 usable=false.\n"
+    "[난이도] 쎈수학 A/B/C=쉬움/중간/어려움.\n[단원 정의]\n" + _GUIDE_BLOCK + "\n"
+    '출력: {"usable":true/false,"grade":4|5|6,"semester":1|2,"unit":"위 목록의 정확한 이름","difficulty":"쉬움|중간|어려움",'
+    '"problem":"...","answer":"...","solution_steps":["..."],"hint_by_level":{"1":"..","2":"..","3":".."},'
+    '"next_question":".."}  ※ 힌트·유도질문에 최종 정답 금지.'
+)
+GEN_SYS = (
+    "너는 초등 수학 문제 출제자다. 주어진 [단원]의 개념에 '정확히' 맞는 문장제를 만들어 JSON만 출력한다.\n"
+    "규칙: 그림 없이 글로 풀 수 있게(도형은 치수를 글로). " + _RULES +
+    " 힌트(1~3)·next_question에 최종 정답(숫자·값) 금지.\n"
+    '출력: {"problems":[{"problem":"..","answer":"..","solution_steps":[".."],'
+    '"hint_by_level":{"1":"..","2":"..","3":".."},"next_question":".."}]}'
 )
 
 
-def tag_user(question: str, answer: str) -> str:
-    return f"[문제]\n{question}\n\n[원본 풀이/정답]\n{answer}"
+def diff_quota(per_unit):
+    base, rem = divmod(per_unit, 3)
+    return {DIFFICULTIES[i]: base + (1 if i < rem else 0) for i in range(3)}
 
 
-def _leak_free(rec: dict) -> bool:
-    """힌트·유도질문에 정답이 새지 않았는지 확인."""
+def _leak_free(rec):
+    """정답이 힌트에 새면 True→False. 정답 문자열 그대로 또는 정답 수가 '단독'으로 등장할 때만 차단
+    (예전엔 정답 숫자가 힌트의 다른 수와 겹치기만 해도 버려서 과도하게 탈락했음)."""
     ans = str(rec.get("answer", "")).strip()
     if not ans:
         return False
-    texts = list(rec.get("hint_by_level", {}).values()) + [rec.get("next_question", "")]
-    # 정답 문자열(또는 숫자부분)이 힌트에 직접 등장하면 유출로 간주
-    num = "".join(ch for ch in ans if ch.isdigit())
-    for t in texts:
-        if ans and ans in t:
+    nums = re.findall(r"\d+(?:[.,/]\d+)?", ans)   # 정답 속 수들
+    for t in list(rec.get("hint_by_level", {}).values()) + [rec.get("next_question", "")]:
+        if ans in t:
             return False
-        if num and num in "".join(c for c in t if c.isdigit()):
-            return False
+        for n in nums:
+            if re.search(rf"(?<![\d.,/]){re.escape(n)}(?![\d.,/])", t):
+                return False
     return True
 
 
-def tag_one(question: str, answer: str) -> dict | None:
-    """한 문항을 Solar로 태깅. 유효하지 않으면 None."""
-    data = llm_client.chat_json(TAG_SYS, tag_user(question, answer))
-    if not data or not data.get("usable"):
-        return None
-    try:
-        grade = int(data["grade"])
-        if grade not in (4, 5, 6):
-            return None
-        rec = {
-            "grade": grade,
-            "semester": int(data.get("semester", 1)),
-            "unit": str(data["unit"]).strip(),
-            "difficulty": str(data["difficulty"]).strip(),
-            "problem": str(data["problem"]).strip(),
-            "answer": str(data["answer"]).strip(),
-            "solution_steps": list(data.get("solution_steps", [])),
-            "hint_by_level": {str(k): str(v) for k, v in data.get("hint_by_level", {}).items()},
-            "next_question": str(data.get("next_question", "")).strip(),
-        }
-    except (KeyError, ValueError, TypeError):
-        return None
-    if rec["difficulty"] not in ("쉬움", "중간", "어려움"):
-        return None
-    if not all(k in rec["hint_by_level"] for k in ("1", "2", "3")):
-        return None
-    if not rec["problem"] or not rec["answer"]:
-        return None
-    if not _leak_free(rec):
-        log.info("  (스킵) 힌트에 정답 유출 → 제외")
-        return None
-    return rec
+def _valid(p):
+    return (bool(str(p.get("problem", "")).strip()) and bool(str(p.get("answer", "")).strip())
+            and all(k in p.get("hint_by_level", {}) for k in ("1", "2", "3")) and _leak_free(p))
 
 
-def iter_candidates(scan: int):
-    """HF 데이터셋을 스트리밍하며 초등 문장제 후보만 걸러 (question, answer)를 내보낸다."""
-    from datasets import load_dataset  # 지연 임포트 (dry-run 시 불필요)
-    ds = load_dataset(DATASET, split="train", streaming=True)
-    seen = 0
-    for row in ds:
-        if seen >= scan:
-            break
-        seen += 1
-        q = (row.get("question") or row.get("instruction") or "").strip()
-        a = str(row.get("answer") or row.get("output") or "").strip()
-        if not q or not a:
-            continue
-        if len(q) > 300:                       # 너무 긴 문제 제외
-            continue
-        if not any(ch.isdigit() for ch in a):  # 수치 답이 없으면 제외
-            continue
-        yield q, a
+def _record(p, g, sem, unit, diff, source):
+    return {"grade": g, "semester": sem, "unit": unit, "difficulty": diff,
+            "problem": str(p["problem"]).strip(), "answer": str(p["answer"]).strip(),
+            "solution_steps": list(p.get("solution_steps", [])),
+            "hint_by_level": {str(k): str(v) for k, v in p["hint_by_level"].items()},
+            "next_question": str(p.get("next_question", "")).strip(), "source": source}
 
 
-DRY_SAMPLES = [
-    ("사탕이 45개 있습니다. 한 사람에게 5개씩 나누어 주면 몇 명에게 줄 수 있나요?", "45 ÷ 5 = 9\n#### 9"),
-    ("연필 3다스는 모두 몇 자루인가요? (1다스는 12자루입니다.)", "3 × 12 = 36\n#### 36"),
-]
+def _excel_safe(v):
+    """엑셀이 분수(5/4)·비(3:4) 등을 날짜/시간으로 자동 변환하는 것 방지 → ="..."로 텍스트 고정.
+    (problems.json 의 원본 값은 그대로 두고, 검수용 CSV에만 적용)."""
+    s = str(v)
+    if re.search(r"\d+\s*[/:\-]\s*\d+", s):
+        return f'="{s}"'
+    return s
+
+
+# 중·고교 티가 나는 문항을 값싸게(LLM 없이) 걸러 태깅 낭비를 줄인다.
+_ADVANCED = re.compile(r"√|∫|Σ|∑|방정식|부등식|함수|미지수|미분|적분|행렬|벡터|로그|log|sin|cos|tan|인수분해|이차|제곱근|시그마")
+
+
+def _too_advanced(q):
+    return bool(_ADVANCED.search(q))
+
+
+def _progress(label, done, total, kept):
+    sys.stdout.write(f"\r  {label}: {done}/{total} 처리 · 적재 {kept}개   ")
+    sys.stdout.flush()
+
+
+def _progress2(examined, tagged, kept):
+    sys.stdout.write(f"\r  [선별] orca {examined}개 검토 · 태깅 {tagged}회 · 적재 {kept}개   ")
+    sys.stdout.flush()
+
+
+def select_from_orca(selectable, per_unit, scan, workers, max_tags, seed):
+    """orca를 '셔플 스트리밍'하며 값싼 필터로 후보만 흘려보내고(=검토/examine),
+    그 후보만 LLM 태깅한다. examine 수(scan)와 태깅 호출 수를 분리한 것이 핵심.
+    → orca를 많이(=골고루) 훑어도, 태깅은 '목표 버킷이 찰 때까지'만 하고 조기 종료한다.
+
+    종료 조건(먼저 만족하는 것):
+      - 모든 목표 버킷 충족(all_full)
+      - 태깅 상한(max_tags) 도달
+      - 정체(STALL_LIMIT회 연속 적재 실패 = 채울 만한 건 사실상 다 참)
+      - 스캔 소진(orca에서 scan개 검토 완료)
+    """
+    from datasets import load_dataset
+
+    sem_map = defaultdict(list)          # (grade, unit) -> [목표 학기들]
+    for g, s, u in selectable:
+        sem_map[(g, u)].append(s)
+    quota = diff_quota(per_unit)
+
+    count = defaultdict(int)
+    kept = []
+    lock = threading.Lock()
+
+    def all_full():
+        for (g, u), sems in sem_map.items():
+            for diff in DIFFICULTIES:
+                if any(count[(g, s, u, diff)] < quota[diff] for s in sems):
+                    return False
+        return True
+
+    def absorb(data):
+        """태깅 결과를 알맞은 (학년·학기·단원·난이도) 버킷에 담는다. 담았으면 True."""
+        if not (data and data.get("usable") and _valid(data)):
+            return False
+        try:
+            g = int(data["grade"]); unit = str(data["unit"]).strip()
+            sem = int(data.get("semester", 1)); diff = str(data.get("difficulty", "")).strip()
+        except (KeyError, ValueError, TypeError):
+            return False
+        if not (g and (g, unit) in sem_map and diff in DIFFICULTIES):
+            return False
+        with lock:
+            sems = sem_map[(g, unit)]
+            order_sems = [sem] + [x for x in sems if x != sem] if sem in sems else sems
+            for cs in order_sems:
+                if count[(g, cs, unit, diff)] < quota[diff]:
+                    kept.append(_record(data, g, cs, unit, diff, "orca"))
+                    count[(g, cs, unit, diff)] += 1
+                    return True
+        return False
+
+    def tag(c):
+        q, a = c
+        return llm_client.chat_json(TAG_SYS, f"[문제]\n{q}\n\n[원본 풀이/정답]\n{a}")
+
+    # (1) 값싼 후보 스트림: orca를 셔플하며 최대 scan개 '검토', 필터 통과분만 흘려보냄(태깅 X)
+    def candidates():
+        ds = load_dataset(DATASET, split="train", streaming=True).shuffle(seed=seed, buffer_size=10000)
+        examined = 0
+        for row in ds:
+            if examined >= scan:
+                break
+            examined += 1
+            q = (row.get("question") or "").strip()
+            a = str(row.get("answer") or "").strip()
+            if q and len(q) <= 300 and any(c.isdigit() for c in a) and not _too_advanced(q):
+                yield (q, a), examined
+
+    STALL_LIMIT = max(1500, per_unit * len(selectable))   # 연속 N회 적재 실패면 사실상 다 참 → 중단
+    gen = candidates()
+    tagged = 0
+    examined_seen = 0
+    stall = 0
+    stop = False
+
+    # (2) 후보를 병렬 태깅하되, 조기 종료 조건에 걸리면 새 후보 투입을 멈춘다(sliding window).
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        inflight = {}
+        for _ in range(workers * 4):
+            item = next(gen, None)
+            if item is None:
+                break
+            c, ex_n = item
+            inflight[ex.submit(tag, c)] = ex_n
+
+        while inflight:
+            done_set, _pending = wait(list(inflight), return_when=FIRST_COMPLETED)
+            for fut in done_set:
+                ex_n = inflight.pop(fut)
+                examined_seen = max(examined_seen, ex_n)
+                try:
+                    data = fut.result()
+                except Exception:
+                    data = None
+                tagged += 1
+                if absorb(data):
+                    stall = 0
+                else:
+                    stall += 1
+                if tagged % 10 == 0:
+                    _progress2(examined_seen, tagged, len(kept))
+                if all_full() or (max_tags and tagged >= max_tags) or stall >= STALL_LIMIT:
+                    stop = True
+            if stop:
+                break
+            for _ in range(len(done_set)):           # 계속할 때만 새 후보 보충
+                item = next(gen, None)
+                if item is None:
+                    break
+                c, ex_n = item
+                inflight[ex.submit(tag, c)] = ex_n
+
+    _progress2(examined_seen, tagged, len(kept))
+    print()
+    reason = ("버킷 충족" if all_full() else "태깅 상한" if (max_tags and tagged >= max_tags)
+              else "정체(더 채울 게 없음)" if stall >= STALL_LIMIT else "스캔 소진")
+    log.info("  선별 종료(%s): orca %d개 검토 · 태깅 %d회 · 적재 %d개", reason, examined_seen, tagged, len(kept))
+    return kept, count
+
+
+def generate_gaps(target_list, per_unit, have, workers):
+    quota = diff_quota(per_unit)
+    tasks = []
+    for g, sem, unit in target_list:
+        for diff in DIFFICULTIES:
+            need = quota[diff] - have.get((g, sem, unit, diff), 0)
+            if need > 0:
+                tasks.append((g, sem, unit, diff, need))
+
+    kept = []
+    lock = threading.Lock()
+    shortfalls = []
+    MAX_ATTEMPTS = 12   # 목표치까지 끈질기게 top-up (큰 부족분도 채우도록 5→12)
+    MAX_STALL = 4       # 연속 N회 하나도 못 건지면 포기(무한 루프 방지)
+
+    def run(task):
+        g, sem, unit, diff, need = task
+        guide = get_guide(g, sem, unit)
+        got, seen = [], set()
+        stall = 0
+        for _ in range(MAX_ATTEMPTS):
+            if len(got) >= need:
+                break
+            k = need - len(got)
+            ask = min(k + 2, 10)   # 무효·중복 탈락분을 감안해 조금 더 요청, 한 번에 최대 10개
+            user = (f"학년: 초등 {g}학년 {sem}학기\n단원: {unit}\n[이 단원의 개념] {guide}\n"
+                    f"난이도: {diff}\n이 개념에 정확히 맞는 서로 다른 문장제 {ask}개. "
+                    f"소재와 숫자가 서로 겹치지 않게 다양하게 만들 것.")
+            data = llm_client.chat_json(GEN_SYS, user)
+            before = len(got)
+            for p in (data.get("problems", []) if isinstance(data, dict) else []):
+                if not _valid(p):
+                    continue
+                key = str(p["problem"]).strip()[:40]
+                if key in seen:
+                    continue
+                seen.add(key)
+                got.append(_record(p, g, sem, unit, diff, "generated"))
+                if len(got) >= need:
+                    break
+            stall = 0 if len(got) > before else stall + 1   # 이번 시도에 하나라도 건졌는지
+            if stall >= MAX_STALL:
+                break
+        if len(got) < need:
+            with lock:
+                shortfalls.append((g, sem, unit, diff, len(got), need))
+        return got
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for recs in ex.map(run, tasks):
+            done += 1
+            with lock:
+                kept.extend(recs)
+            if done % 3 == 0 or done == len(tasks):
+                _progress("[생성]", done, len(tasks), len(kept))
+    print()
+    if shortfalls:
+        log.warning("  생성 목표 미달 %d개 버킷(그래도 최대한 채움):", len(shortfalls))
+        for g, sem, unit, diff, got_n, need_n in shortfalls[:30]:
+            log.warning("    %d-%d %s [%s]: %d/%d", g, sem, unit, diff, got_n, need_n)
+    return kept
+
+
+def targets(grades):
+    # 같은 단원명이 학기별로 다른 개념이면(6학년 분수/소수의 나눗셈) 둘 다 별개 단원으로 둔다.
+    out = []
+    for g in grades:
+        for sem, units in CURRICULUM.get(g, {}).items():
+            for u in units:
+                out.append((g, sem, u))
+    return out
+
+
+def _order_index():
+    order, i = {}, 0
+    for g in sorted(CURRICULUM):
+        for sem in sorted(CURRICULUM[g]):
+            for u in CURRICULUM[g][sem]:
+                order[(g, sem, u)] = i
+                i += 1
+    return order
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--keep", type=int, default=35, help="최종으로 남길 문항 수")
-    ap.add_argument("--scan", type=int, default=500, help="훑어볼 후보 개수")
-    ap.add_argument("--dry-run", action="store_true", help="HF 없이 내장 샘플로 점검")
+    ap.add_argument("--grades", default="4,5,6")
+    ap.add_argument("--per-unit", type=int, default=30, help="단원별 목표(난이도 3등분). 30이면 10/10/10")
+    ap.add_argument("--scan", type=int, default=30000,
+                    help="orca에서 '검토'할 문항 수(값쌈). 태깅 호출 수와 별개 — 버킷이 차면 태깅은 조기 종료")
+    ap.add_argument("--max-tags", type=int, default=0,
+                    help="LLM 태깅 호출 상한(비쌈). 0이면 무제한(버킷 충족/정체로 자동 종료)")
+    ap.add_argument("--seed", type=int, default=42, help="orca 셔플 시드(다양성 확보). 바꾸면 다른 표본을 봄")
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--no-generate", action="store_true")
     ap.add_argument("--out", default=os.path.join(DATA_DIR, "problems.json"))
     args = ap.parse_args()
 
     if not llm_client.is_enabled():
-        log.error("SOLAR_API_KEY(.env)가 없어 태깅을 못 합니다. 키를 넣고 다시 실행하세요.")
-        sys.exit(1)
+        log.error("SOLAR_API_KEY(.env) 필요."); sys.exit(1)
 
-    candidates = DRY_SAMPLES if args.dry_run else iter_candidates(args.scan)
+    grades = [int(x) for x in args.grades.split(",") if x.strip()]
+    tlist = targets(grades)
+    selectable = [(g, s, u) for (g, s, u) in tlist if u not in FIGURE_DEPENDENT]
+    q = diff_quota(args.per_unit)
+    log.info("난이도 목표(단원당): %s", q)
 
-    kept: list[dict] = []
-    for i, (q, a) in enumerate(candidates, 1):
-        rec = tag_one(q, a)
-        if rec:
-            rec["id"] = f"gen_{len(kept) + 1:04d}"
-            kept.append(rec)
-            log.info("[%d/%d] 채택: %s / %s / %s", len(kept), args.keep, rec["grade"], rec["unit"], rec["difficulty"])
-        if len(kept) >= args.keep:
-            break
+    log.info("Phase A: orca 선별 (검토 최대 %d개, 태깅상한 %s, 대상 %d단원, 병렬 %d, seed=%d)",
+             args.scan, args.max_tags or "무제한", len(selectable), args.workers, args.seed)
+    selected, count = select_from_orca(selectable, args.per_unit, args.scan, args.workers,
+                                       args.max_tags or None, args.seed)
 
-    if not kept:
-        log.error("채택된 문항이 없습니다. (키/모델/데이터 확인)")
-        sys.exit(1)
+    shortfall = sum(max(0, q[d] - count.get((g, s, u, d), 0)) for g, s, u in tlist for d in DIFFICULTIES)
+    log.info("선별 %d개 · 생성으로 채울 부족분 %d개", len(selected), shortfall)
 
-    # 앱이 읽는 JSON
+    generated = []
+    if not args.no_generate and shortfall:
+        log.info("Phase B: 난이도별 부족분 생성 (병렬 %d)", args.workers)
+        generated = generate_gaps(tlist, args.per_unit, count, args.workers)
+
+    order = _order_index()
+    didx = {d: i for i, d in enumerate(DIFFICULTIES)}
+    allrecs = selected + generated
+    allrecs.sort(key=lambda r: (order.get((r["grade"], r["semester"], r["unit"]), 999), didx.get(r["difficulty"], 9)))
+    for i, r in enumerate(allrecs, 1):
+        r["id"] = f"p_{i:04d}"
+
     with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(kept, f, ensure_ascii=False, indent=2)
-
-    # 사람 검수용 CSV (Excel에서 열기)
-    csv_path = os.path.join(DATA_DIR, "review_problems.csv")
+        json.dump(allrecs, f, ensure_ascii=False, indent=2)
+    csv_path = os.path.join(DATA_DIR, "elementary_math_problems.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["id", "grade", "semester", "unit", "difficulty", "problem", "answer",
+        w.writerow(["id", "source", "grade", "semester", "unit", "difficulty", "problem", "answer",
                     "hint1", "hint2", "hint3", "next_question"])
-        for r in kept:
+        for r in allrecs:
             h = r["hint_by_level"]
-            w.writerow([r["id"], r["grade"], r["semester"], r["unit"], r["difficulty"],
-                        r["problem"], r["answer"], h.get("1", ""), h.get("2", ""), h.get("3", ""),
-                        r["next_question"]])
+            w.writerow([r["id"], r["source"], r["grade"], r["semester"], r["unit"], r["difficulty"],
+                        r["problem"], _excel_safe(r["answer"]), h.get("1", ""), h.get("2", ""), h.get("3", ""), r["next_question"]])
 
-    # 요약
     from collections import Counter
-    log.info("\n=== 완료: %d문항 ===", len(kept))
-    log.info("난이도: %s", dict(Counter(r["difficulty"] for r in kept)))
-    log.info("단원   : %s", dict(Counter(r["unit"] for r in kept)))
-    log.info("저장   : %s", args.out)
-    log.info("검수용 : %s  ← 사람이 검수 후 사용하세요", csv_path)
+    log.info("=== 완료: 총 %d개 (선별 %d + 생성 %d) ===", len(allrecs), len(selected), len(generated))
+    log.info("source : %s", dict(Counter(r["source"] for r in allrecs)))
+    log.info("난이도 : %s", dict(Counter(r["difficulty"] for r in allrecs)))
+
+    # 단원별·난이도별 최종 개수 검증 (목표 미달 단원을 눈에 띄게 표시)
+    final = Counter((r["grade"], r["semester"], r["unit"], r["difficulty"]) for r in allrecs)
+    bad = 0
+    log.info("--- 단원별 개수 검증(목표 %s) ---", q)
+    for g, sem, unit in tlist:
+        cells = [final.get((g, sem, unit, d), 0) for d in DIFFICULTIES]
+        ok = all(c >= q[d] for c, d in zip(cells, DIFFICULTIES))
+        if not ok:
+            bad += 1
+        mark = "" if ok else "  ← 미달"
+        log.info("  %d-%d %-16s 쉬움 %d / 중간 %d / 어려움 %d (합 %d)%s",
+                 g, sem, unit, cells[0], cells[1], cells[2], sum(cells), mark)
+    log.info("목표 달성 단원 %d/%d개%s", len(tlist) - bad, len(tlist),
+             " (모두 충족!)" if bad == 0 else f" · 미달 {bad}개")
+    log.info("저장: %s / 검수: %s", args.out, csv_path)
 
 
 if __name__ == "__main__":
