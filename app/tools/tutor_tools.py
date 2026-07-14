@@ -51,11 +51,12 @@ def diagnose_step(problem: dict, attempt: str) -> Diagnosis:
     return Diagnosis(stuck_point="나눗셈의 의미를 아직 못 잡음", is_correct=False, solved=False)
 
 
-def generate_hint(problem: dict, hint_level: int) -> Hint:
-    """hint_level(1~3)에 맞춘 소크라테스식 힌트. LLM 있으면 자연스럽게 생성, 없으면 데이터 힌트 사용."""
+def generate_hint(problem: dict, hint_level: int, stuck_point: str = "") -> Hint:
+    """hint_level(1~3)에 맞춘 소크라테스식 힌트. LLM 있으면 진단된 stuck_point를 반영해 자연스럽게 생성,
+    없으면 데이터 힌트 사용."""
     level = max(1, min(hint_level, 3))
     ref = problem["hint_by_level"][str(level)]
-    txt = llm_client.chat_text(prompts.HINT_SYS, prompts.hint_user(problem, ref, level),
+    txt = llm_client.chat_text(prompts.HINT_SYS, prompts.hint_user(problem, ref, level, stuck_point),
                                 trace_name="generate_hint")
     hint_text = txt.strip() if txt else ref
     return Hint(hint_text=hint_text, level=level, contains_answer=False)

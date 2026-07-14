@@ -29,9 +29,10 @@ def diagnose(state: TutorState) -> dict:
 
 
 def generate_hint(state: TutorState) -> dict:
-    """아직 못 풀었을 때 → 다음 한 걸음 힌트."""
+    """아직 못 풀었을 때 → 진단된 막힌 지점을 반영해 다음 한 걸음 힌트."""
     level = state.get("hint_level", 1)
-    h = tools.generate_hint(state["problem"], level)
+    stuck_point = (state.get("diagnosis") or {}).get("stuck_point", "")
+    h = tools.generate_hint(state["problem"], level, stuck_point)
     return {"response": h.hint_text, "hint": h.hint_text, "hint_level": min(level + 1, 3)}
 
 

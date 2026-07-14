@@ -12,7 +12,7 @@ import asyncio
 from langgraph.graph import StateGraph, START, END
 from app.agent.state import TutorState
 from app.agent import nodes
-from app.repositories import problem_repo
+from app.repositories import problem_repo, progress_repo
 from app.schemas.chat import ChatRequest
 
 
@@ -64,7 +64,8 @@ async def run_tutor(req: ChatRequest, result_holder: dict | None = None):
     LLM을 다시 호출하지 않고도 서비스 계층이 진척도를 기록할 수 있게 하기 위함.
     """
     problem = problem_repo.get_problem(req.problem_id)
-    out = tutor_turn(problem, req.message)
+    hint_level = progress_repo.get_hint_level(req.student_id, req.problem_id)
+    out = tutor_turn(problem, req.message, hint_level=hint_level)
     if result_holder is not None:
         result_holder.update(out)
         result_holder["unit"] = problem["unit"]

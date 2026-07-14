@@ -46,6 +46,24 @@ def record_turn(student_id: str, problem_id: str, turn: dict) -> None:
         log.warning("진척도 기록 실패(무시): %s", e)
 
 
+def get_hint_level(student_id: str, problem_id: str) -> int:
+    """직전 턴까지 도달한 힌트 단계를 조회한다(턴 사이 상태 유지용). 기록 없으면 1단계부터."""
+    client = supabase_client.get_client()
+    if client is None or not student_id or not problem_id:
+        return 1
+    try:
+        res = (client.table("progress").select("max_hint_level")
+               .eq("student_id", student_id).eq("problem_id", problem_id)
+               .limit(1).execute())
+        rows = res.data or []
+        if not rows:
+            return 1
+        return max(int(rows[0].get("max_hint_level") or 0), 1)
+    except Exception as e:
+        log.warning("힌트 단계 조회 실패(1단계로 시작): %s", e)
+        return 1
+
+
 def get_progress(student_id: str) -> list[dict]:
     """특정 학생의 문제별 진척도 목록."""
     client = supabase_client.get_client()
