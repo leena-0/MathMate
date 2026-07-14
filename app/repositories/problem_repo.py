@@ -19,6 +19,33 @@ _DIR = Path(__file__).resolve().parents[2] / "data"
 # 프론트/외부에 내보내도 안전한 필드만
 _PUBLIC_FIELDS = ("id", "grade", "semester", "unit", "difficulty", "problem")
 
+# 교육과정 단원 순서. data/scripts/build_problem_bank.py의 CURRICULUM과 동일하게 유지할 것
+# (알파벳/가나다 정렬이 아니라 학습 순서대로 프론트에 보여주기 위함).
+_CURRICULUM_ORDER = {
+    4: {1: ["큰 수", "각도", "곱셈과 나눗셈", "평면도형의 이동", "막대그래프", "규칙 찾기"],
+        2: ["분수의 덧셈과 뺄셈", "삼각형", "소수의 덧셈과 뺄셈", "사각형", "꺾은선그래프", "다각형"]},
+    5: {1: ["자연수의 혼합 계산", "약수와 배수", "규칙과 대응", "약분과 통분", "분수의 덧셈과 뺄셈", "다각형의 둘레와 넓이"],
+        2: ["수의 범위와 어림하기", "분수의 곱셈", "합동과 대칭", "소수의 곱셈", "직육면체", "평균과 가능성"]},
+    6: {1: ["분수의 나눗셈", "각기둥과 각뿔", "소수의 나눗셈", "비와 비율", "여러 가지 그래프", "직육면체의 겉넓이와 부피"],
+        2: ["분수의 나눗셈", "소수의 나눗셈", "공간과 입체", "비례식과 비례배분", "원의 넓이", "원기둥, 원뿔, 구"]},
+}
+
+
+def _build_unit_rank() -> dict[str, int]:
+    """단원명 → 교육과정상 순번. 먼저 나오는 학년·학기 기준(동명 단원은 첫 등장 순서를 따름)."""
+    rank: dict[str, int] = {}
+    i = 0
+    for g in sorted(_CURRICULUM_ORDER):
+        for s in sorted(_CURRICULUM_ORDER[g]):
+            for u in _CURRICULUM_ORDER[g][s]:
+                if u not in rank:
+                    rank[u] = i
+                    i += 1
+    return rank
+
+
+_UNIT_RANK = _build_unit_rank()
+
 
 def _from_supabase() -> list[dict]:
     """Supabase problems 테이블을 JSON과 동일한 형태(dict)로 변환해 로드. 실패 시 빈 리스트."""
@@ -129,7 +156,17 @@ def list_semesters(grade: int | None = None) -> list[int]:
 
 
 def list_units(grade: int | None = None, semester: int | None = None) -> list[str]:
-    """주어진 학년·학기(없으면 전체)에 실제로 존재하는 단원 목록."""
-    return sorted({p["unit"] for p in _PROBLEMS
-                   if (not grade or p.get("grade") == grade)
-                   and (not semester or p.get("semester") == semester)})
+    """주어진 학년·학기(없으면 전체)에 실제로 존재하는 단원 목록. 교육과정 순서대로 정렬.
+
+    같은 단원명이 다른 학년·학기에도 나올 수 있어(예: 6-1/6-2 '분수의 나눗셈'),
+    grade·semester가 둘 다 주어지면 그 학기의 순서를 그대로 쓰고,
+    아니면 전체 교육과정을 훑은 순번(_UNIT_RANK)으로 대체한다.
+    """
+    units = {p["unit"] for p in _PROBLEMS
+             if (not grade or p.get("grade") == grade)
+             and (not semester or p.get("semester") == semester)}
+    order = _CURRICULUM_ORDER.get(grade, {}).get(semester) if grade and semester else None
+    if order:
+        rank = {u: i for i, u in enumerate(order)}
+        return sorted(units, key=lambda u: (rank.get(u, len(order)), u))
+    return sorted(units, key=lambda u: (_UNIT_RANK.get(u, len(_UNIT_RANK)), u))
