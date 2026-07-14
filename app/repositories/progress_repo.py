@@ -10,18 +10,18 @@ from app.repositories import supabase_client
 log = logging.getLogger(__name__)
 
 
-def record_turn(student_id: str, problem_id: str, turn: dict) -> None:
-    """튜터 한 턴 결과(turn=graph out)를 읽어 진척도를 누적 upsert한다.
+def record_turn(student_id: str, problem_id: str, turn: dict) -> dict | None:
+    """튜터 한 턴 결과(turn=graph out)를 읽어 진척도를 누적 upsert하고, 갱신된 행을 반환한다.
 
     turn에서 추출:
       - hint_given: 이번 턴에 힌트를 줬는가 (out['hint'] 존재)
       - hint_level: 도달한 힌트 단계
       - solved   : 최종 정답 도달 여부
-    실패해도 예외를 삼켜 대화 흐름을 막지 않는다.
+    실패해도 예외를 삼켜 대화 흐름을 막지 않는다(이때는 None 반환).
     """
     client = supabase_client.get_client()
     if client is None or not student_id or not problem_id:
-        return
+        return None
     try:
         hint_given = bool(turn.get("hint"))
         hint_level = int(turn.get("hint_level") or 0)
@@ -49,8 +49,10 @@ def record_turn(student_id: str, problem_id: str, turn: dict) -> None:
             "revealed": (False if prior_concluded else bool(cur.get("revealed"))) or revealed,
         }
         client.table("progress").upsert(row, on_conflict="student_id,problem_id").execute()
+        return row
     except Exception as e:
         log.warning("진척도 기록 실패(무시): %s", e)
+        return None
 
 
 def get_hint_level(student_id: str, problem_id: str) -> int:
