@@ -12,7 +12,7 @@ import asyncio
 from langgraph.graph import StateGraph, START, END
 from app.agent.state import TutorState
 from app.agent import nodes
-from app.repositories import problem_repo
+from app.repositories import problem_repo, progress_repo
 from app.schemas.chat import ChatRequest
 
 
@@ -62,6 +62,8 @@ async def run_tutor(req: ChatRequest):
     """
     problem = problem_repo.get_problem(req.problem_id)
     out = tutor_turn(problem, req.message)
+    # 진척도(힌트 사용량 등) 누적. Supabase 없으면 내부에서 조용히 무시된다.
+    progress_repo.record_turn(req.student_id, req.problem_id, out)
     text = out.get("response", "")
 
     chunk = ""

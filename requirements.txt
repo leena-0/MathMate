@@ -13,3 +13,4 @@ pytest
 deepeval
 litellm
 datasets
+supabase
