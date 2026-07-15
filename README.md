@@ -96,7 +96,7 @@ https://github.com/user-attachments/assets/9682545e-31db-4bda-815e-d470be347189
 ## 7. 참고자료 / 발표자료
 
 - **발표자료**: [MathMate 발표자료 (Google Slides)](https://docs.google.com/presentation/d/1x0U7ITbB2ES_dt2O26vNbChOKDnXoOHcxuWii-nsOBg/edit?usp=sharing)
-- **기획서**: _(프로젝트 기획서 링크 입력)_
+- **기획서**: https://docs.google.com/document/d/1I8wwrhb9Zv6gZSmi82APVVAy7fcNs9-T4Ze3dxppQ2w/edit?usp=sharing
 - **참고한 문서**: [개발 문서(설치·배포·LLMOps) — docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - **참고한 오픈소스**: [LangGraph](https://github.com/langchain-ai/langgraph), [LiteLLM](https://github.com/BerriAI/litellm), [FastAPI](https://github.com/fastapi/fastapi), [Streamlit](https://github.com/streamlit/streamlit), [Supabase](https://github.com/supabase/supabase), [Langfuse](https://github.com/langfuse/langfuse)
 - **데이터 출처**: [kuotient/orca-math-word-problems-193k-korean](https://huggingface.co/datasets/kuotient/orca-math-word-problems-193k-korean) (CC-BY-SA-4.0)
