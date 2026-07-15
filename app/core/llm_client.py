@@ -31,11 +31,18 @@ def _ensure_langfuse_callback() -> None:
     _langfuse_configured = True
 
 
-def _call(system: str, user: str, temperature: float, json_mode: bool, trace_name: str):
+def _call(system: str, user: str, temperature: float, json_mode: bool, trace_name: str,
+          trace_id: str | None = None):
     """LiteLLM으로 Solar 호출. 실패 시 예외를 그대로 올린다(상위에서 처리)."""
     import litellm  # 지연 임포트: 키 없는 환경/테스트에선 불필요
 
     _ensure_langfuse_callback()
+
+    metadata = {"trace_name": trace_name}   # Langfuse 대시보드에서 호출 종류 구분용
+    if trace_id:
+        # eval 스크립트가 채점 결과를 langfuse.score(trace_id=...)로 이 트레이스에 붙일 수 있게
+        # 트레이스 ID를 우리가 직접 지정한다(안 넘기면 LiteLLM이 임의로 생성).
+        metadata["trace_id"] = trace_id
 
     kwargs = dict(
         model=f"openai/{config.SOLAR_MODEL}",
@@ -45,7 +52,7 @@ def _call(system: str, user: str, temperature: float, json_mode: bool, trace_nam
         temperature=temperature,
         timeout=config.LLM_TIMEOUT,
         num_retries=config.LLM_NUM_RETRIES,   # 429·5xx·타임아웃 자동 재시도(지수 백오프)
-        metadata={"trace_name": trace_name},   # Langfuse 대시보드에서 호출 종류 구분용
+        metadata=metadata,
     )
     if config.FALLBACK_MODEL:
         # 문자열로만 넘기면 LiteLLM이 Solar용 api_key/api_base를 그대로 재사용해서
@@ -61,24 +68,28 @@ def _call(system: str, user: str, temperature: float, json_mode: bool, trace_nam
     return resp.choices[0].message.content
 
 
-def chat_json(system: str, user: str, trace_name: str = "chat_json") -> dict | None:
+def chat_json(system: str, user: str, trace_name: str = "chat_json",
+              trace_id: str | None = None) -> dict | None:
     """구조화(JSON) 응답을 dict로 반환. 비활성/실패/파싱불가 시 None."""
     if not config.USE_LLM:
         return None
     try:
-        content = _call(system, user, temperature=0.0, json_mode=True, trace_name=trace_name)
+        content = _call(system, user, temperature=0.0, json_mode=True, trace_name=trace_name,
+                         trace_id=trace_id)
         return _safe_json(content)
     except Exception as e:   # 인증(401)·잘못된요청(400)·서버오류(5xx)·타임아웃 등
         _log_failure("JSON", e)
         return None
 
 
-def chat_text(system: str, user: str, trace_name: str = "chat_text") -> str | None:
+def chat_text(system: str, user: str, trace_name: str = "chat_text",
+              trace_id: str | None = None) -> str | None:
     """자유 텍스트 응답. 비활성/실패 시 None."""
     if not config.USE_LLM:
         return None
     try:
-        return _call(system, user, temperature=0.4, json_mode=False, trace_name=trace_name)
+        return _call(system, user, temperature=0.4, json_mode=False, trace_name=trace_name,
+                      trace_id=trace_id)
     except Exception as e:
         _log_failure("텍스트", e)
         return None
