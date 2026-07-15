@@ -33,9 +33,22 @@ def _mastery_level(avg_hints: float) -> str:
     return "취약"
 
 
+def _accuracy_by_difficulty(rows: list[dict]) -> dict[str, float | None]:
+    """주어진 attempts 행들(전체 시도 기준)의 난이도별 정답률(%). 그 난이도 시도가 없으면 None."""
+    by_diff: dict[str, list[bool]] = {d: [] for d in _DIFFICULTIES}
+    for r in rows:
+        diff = r.get("difficulty")
+        if diff in by_diff:
+            by_diff[diff].append(bool(r.get("solved")))
+    return {
+        diff: (round(100 * sum(results) / len(results), 1) if results else None)
+        for diff, results in by_diff.items()
+    }
+
+
 def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | None = None) -> list[dict]:
-    """단원별 '스스로 해결한 문제 수 · 평균 힌트 사용량 · 숙련도 · 정답 공개된 문제 수 · 성공률'을 집계한다.
-    grade/semester를 넘기면 그 학년·학기에 시도한 문제만으로 좁혀서 집계한다.
+    """단원별 '스스로 해결한 문제 수 · 평균 힌트 사용량 · 숙련도 · 정답 공개된 문제 수 · 성공률 ·
+    난이도별 정답률'을 집계한다. grade/semester를 넘기면 그 학년·학기에 시도한 문제만으로 좁혀서 집계한다.
 
     problems_attempted/avg_hints_used/mastery_level은 '스스로 해결한(solved) 문제'만 기준으로 하고,
     힌트를 다 쓰고 튜터가 정답을 공개한(solved=False) 문제는 revealed_count로 따로 센다 —
@@ -46,7 +59,7 @@ def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | Non
     많은 쪽, 그래도 동률이면 포기(공개)한 문제가 많은 쪽, 그래도 동률이면 문제를 적게 푼(연습이
     덜 된) 쪽을 더 약하다고 본다.
     """
-    query = get_client().table("attempts").select("unit, hints_used, solved").eq("user_id", user_id)
+    query = get_client().table("attempts").select("unit, hints_used, solved, difficulty").eq("user_id", user_id)
     if grade is not None:
         query = query.eq("grade", grade)
     if semester is not None:
@@ -55,11 +68,14 @@ def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | Non
 
     solved_hints: dict[str, list[int]] = defaultdict(list)
     revealed_count: dict[str, int] = defaultdict(int)
+    rows_by_unit: dict[str, list[dict]] = defaultdict(list)
     for row in res.data:
+        unit = row["unit"]
+        rows_by_unit[unit].append(row)
         if row.get("solved"):
-            solved_hints[row["unit"]].append(row["hints_used"])
+            solved_hints[unit].append(row["hints_used"])
         else:
-            revealed_count[row["unit"]] += 1
+            revealed_count[unit] += 1
 
     items = []
     for unit in set(solved_hints) | set(revealed_count):
@@ -74,6 +90,7 @@ def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | Non
             "mastery_level": _mastery_level(avg_hints) if avg_hints is not None else "취약",
             "revealed_count": revealed_n,
             "success_rate": round(100 * solved_n / total, 1) if total else 0.0,
+            "accuracy_by_difficulty": _accuracy_by_difficulty(rows_by_unit[unit]),
         })
     items.sort(key=lambda x: (x["success_rate"], -(x["avg_hints_used"] or 0), -x["revealed_count"],
                               x["problems_attempted"]))
@@ -94,16 +111,7 @@ def get_overall_summary(user_id: int, grade: int | None = None, semester: int | 
     rows = query.execute().data or []
 
     total_hints = sum(int(r.get("hints_used") or 0) for r in rows)
-    by_diff: dict[str, list[bool]] = {d: [] for d in _DIFFICULTIES}
-    for r in rows:
-        diff = r.get("difficulty")
-        if diff in by_diff:
-            by_diff[diff].append(bool(r.get("solved")))
-
-    accuracy = {
-        diff: (round(100 * sum(results) / len(results), 1) if results else None)
-        for diff, results in by_diff.items()
-    }
+    accuracy = _accuracy_by_difficulty(rows)
 
     return {
         "total_attempts": len(rows),

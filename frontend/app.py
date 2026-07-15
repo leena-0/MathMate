@@ -474,6 +474,12 @@ def render_feedback_page():
             solved_line += f' <span style="color:#D9534F;">· 정답 공개 {revealed_count}문제</span>'
         solved_line += f' <span style="color:#AAA;">(성공률 {item.get("success_rate", 0)}%)</span>'
 
+        diff_acc = item.get("accuracy_by_difficulty") or {}
+        diff_line = " · ".join(
+            f"{label} {diff_acc.get(key)}%" if diff_acc.get(key) is not None else f"{label} -"
+            for label, key in [("쉬움", "쉬움"), ("중간", "중간"), ("어려움", "어려움")]
+        )
+
         st.markdown(
             f"""
             <div class="mastery-card">
@@ -488,6 +494,9 @@ def render_feedback_page():
               </div>
               <div style="color:#888; font-size:15px;">
                 {solved_line}
+              </div>
+              <div style="color:#AAA; font-size:13px; margin-top:6px;">
+                난이도별 정답률 — {diff_line}
               </div>
             </div>
             """,

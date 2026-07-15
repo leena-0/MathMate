@@ -2,7 +2,7 @@
 from app.repositories import attempt_repo
 
 
-def _record(user_id, unit, hints_used, grade=5, semester=1, solved=True, problem_id=None):
+def _record(user_id, unit, hints_used, grade=5, semester=1, solved=True, problem_id=None, difficulty=None):
     attempt_repo.record_attempt(
         user_id=user_id,
         problem_id=problem_id or f"{unit}-{hints_used}-{grade}-{semester}",
@@ -11,6 +11,7 @@ def _record(user_id, unit, hints_used, grade=5, semester=1, solved=True, problem
         solved=solved,
         grade=grade,
         semester=semester,
+        difficulty=difficulty,
     )
 
 
@@ -86,6 +87,19 @@ def test_weakest_tiebreak_prefers_fewer_attempts(fake_supabase):
 
 def test_no_attempts_returns_empty_list(fake_supabase):
     assert attempt_repo.get_unit_mastery(999) == []
+
+
+def test_unit_mastery_includes_per_unit_difficulty_accuracy(fake_supabase):
+    """단원 카드에도 그 단원 안에서의 난이도별 정답률이 같이 나와야 한다."""
+    _record(1, "큰 수", 1, solved=True, difficulty="쉬움", problem_id="a")
+    _record(1, "큰 수", 3, solved=False, difficulty="쉬움", problem_id="b")
+    _record(1, "큰 수", 0, solved=True, difficulty="어려움", problem_id="c")
+
+    items = {i["unit"]: i for i in attempt_repo.get_unit_mastery(1)}
+    acc = items["큰 수"]["accuracy_by_difficulty"]
+    assert acc["쉬움"] == 50.0
+    assert acc["어려움"] == 100.0
+    assert acc["중간"] is None
 
 
 def test_weakest_ranked_by_success_rate_not_raw_avg_hints(fake_supabase):
