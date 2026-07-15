@@ -89,15 +89,15 @@ st.markdown(
 )
 
 
-def create_or_get_profile(name: str, grade: int, semester: int, password: str, create_new: bool = False):
-    """성공하면 프로필 dict, 이름은 있는데 비번이 다르면 'name_conflict', 연결 실패면 None."""
+def create_or_get_profile(login_id: str, name: str, grade: int, semester: int, password: str):
+    """성공하면 프로필 dict, 아이디는 있는데 비번이 다르면 'wrong_password', 연결 실패면 None."""
     try:
         res = httpx.post(f"{BACKEND_URL}/api/profile",
-                          json={"name": name, "grade": grade, "semester": semester,
-                                "password": password, "create_new": create_new},
+                          json={"login_id": login_id, "name": name, "grade": grade,
+                                "semester": semester, "password": password},
                           timeout=5)
-        if res.status_code == 409:
-            return "name_conflict"
+        if res.status_code == 401:
+            return "wrong_password"
         res.raise_for_status()
         return res.json()
     except httpx.HTTPError:
@@ -227,52 +227,32 @@ def mastery_bar_width(avg_hints_used: float) -> int:
 
 if "user" not in st.session_state:
     st.title("🧮 MathMate")
-    st.caption("먼저 이름, 학년, 비밀번호를 알려줄래? 😊")
-    st.caption("비밀번호는 나중에 다시 들어올 때 '나'인지 확인하는 용도야. 아무거나 정해도 괜찮아!")
+    st.caption("먼저 아이디, 이름, 학년, 비밀번호를 알려줄래? 😊")
+    st.caption("아이디는 다른 친구랑 겹치면 안 돼! 비밀번호는 나중에 다시 들어올 때 '나'인지 확인하는 용도야.")
 
-    if "pending_profile" not in st.session_state:
-        with st.form("profile_form"):
-            name = st.text_input("이름이 뭐야?")
-            grade = st.selectbox("몇 학년이야?", [4, 5, 6])
-            semester = st.selectbox("몇 학기야?", [1, 2])
-            password = st.text_input("비밀번호(암호)를 정해줄래?", type="password")
-            submitted = st.form_submit_button("시작하기 ✏️")
-        if submitted:
-            if not name.strip():
-                st.warning("이름을 입력해줄래?")
-            elif not password:
-                st.warning("비밀번호도 정해줄래?")
+    with st.form("profile_form"):
+        login_id = st.text_input("아이디를 정해줄래? (영문/숫자)")
+        name = st.text_input("이름이 뭐야?")
+        grade = st.selectbox("몇 학년이야?", [4, 5, 6])
+        semester = st.selectbox("몇 학기야?", [1, 2])
+        password = st.text_input("비밀번호(암호)를 정해줄래?", type="password")
+        submitted = st.form_submit_button("시작하기 ✏️")
+    if submitted:
+        if not login_id.strip():
+            st.warning("아이디를 입력해줄래?")
+        elif not name.strip():
+            st.warning("이름을 입력해줄래?")
+        elif not password:
+            st.warning("비밀번호도 정해줄래?")
+        else:
+            profile = create_or_get_profile(login_id.strip(), name.strip(), grade, semester, password)
+            if profile is None:
+                st.error("앗, 서버랑 연결이 안 돼요. 선생님을 불러주세요!")
+            elif profile == "wrong_password":
+                st.error("어? 그 아이디는 이미 있는데 비밀번호가 달라요. 다시 확인해줄래?")
             else:
-                profile = create_or_get_profile(name.strip(), grade, semester, password)
-                if profile is None:
-                    st.error("앗, 서버랑 연결이 안 돼요. 선생님을 불러주세요!")
-                elif profile == "name_conflict":
-                    st.session_state.pending_profile = {
-                        "name": name.strip(), "grade": grade, "semester": semester, "password": password,
-                    }
-                    st.rerun()
-                else:
-                    st.session_state.user = profile
-                    st.rerun()
-    else:
-        pending = st.session_state.pending_profile
-        st.warning(f"'{pending['name']}'(이)라는 이름이 이미 있는데, 비밀번호가 달라요.")
-        st.caption("혹시 비밀번호를 잘못 눌렀니, 아니면 다른 친구니?")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔁 비밀번호 다시 확인할래요"):
-                del st.session_state.pending_profile
+                st.session_state.user = profile
                 st.rerun()
-        with col2:
-            if st.button("🙋 저는 다른 친구예요"):
-                profile = create_or_get_profile(pending["name"], pending["grade"], pending["semester"],
-                                                 pending["password"], create_new=True)
-                del st.session_state.pending_profile
-                if isinstance(profile, dict):
-                    st.session_state.user = profile
-                    st.rerun()
-                else:
-                    st.error("앗, 서버랑 연결이 안 돼요. 선생님을 불러주세요!")
     st.stop()
 
 user = st.session_state.user
@@ -406,9 +386,33 @@ def render_feedback_page():
         st.error("앗, 서버랑 연결이 안 돼요. 선생님을 불러주세요!")
         st.stop()
 
+    summary = feedback["summary"]
+    if summary["total_attempts"] == 0:
+        st.info("아직 푼 문제가 없어요. 학습 화면에서 문제를 풀어보면 여기에 리포트가 쌓여요!")
+        return
+
+    st.markdown(f'<div class="recommend-banner" style="margin-bottom:18px; display:block;">'
+                f'<div style="font-size:17px; color:#1B4E8F; font-weight:600; margin-bottom:14px;">'
+                f'{html_lib.escape(summary["message"])}</div>'
+                f'<div style="display:flex; gap:10px; flex-wrap:wrap;">'
+                + "".join(
+                    f'<div style="background:#FFFFFF; border-radius:14px; padding:10px 16px; min-width:110px;">'
+                    f'<div style="font-size:13px; color:#888;">{label}</div>'
+                    f'<div style="font-size:20px; font-weight:700; color:#1B4E8F;">{value}</div></div>'
+                    for label, value in [
+                        ("힌트 사용 횟수", f'{summary["total_hints_used"]}회'),
+                        ("쉬운 문제 정답률", f'{summary["accuracy_by_difficulty"].get("쉬움")}%'
+                         if summary["accuracy_by_difficulty"].get("쉬움") is not None else "-"),
+                        ("중간 난이도 정답률", f'{summary["accuracy_by_difficulty"].get("중간")}%'
+                         if summary["accuracy_by_difficulty"].get("중간") is not None else "-"),
+                        ("고난이도 정답률", f'{summary["accuracy_by_difficulty"].get("어려움")}%'
+                         if summary["accuracy_by_difficulty"].get("어려움") is not None else "-"),
+                    ]
+                )
+                + "</div></div>", unsafe_allow_html=True)
+
     items = feedback["items"]
     if not items:
-        st.info("아직 푼 문제가 없어요. 학습 화면에서 문제를 풀어보면 여기에 리포트가 쌓여요!")
         return
 
     for item in items:

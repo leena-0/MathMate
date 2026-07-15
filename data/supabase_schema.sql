@@ -45,3 +45,11 @@ create table if not exists public.progress (
 create index if not exists idx_progress_student on public.progress (student_id);
 
 alter table public.progress enable row level security;
+
+-- 3) 마이그레이션: 프로필(users)·진척도(attempts) 보강 (2회차 멘토링 피드백 반영) --------
+-- users: 동명이인+비밀번호 조합 대신, 학생이 직접 정하는 고유 아이디(login_id)로 식별.
+-- 기존 행은 login_id가 NULL이라 UNIQUE 제약에 안 걸림(NULL은 여러 개 허용).
+alter table public.users add column if not exists login_id text unique;
+
+-- attempts: 난이도별 정답률 계산을 위해 문제 난이도를 같이 저장.
+alter table public.attempts add column if not exists difficulty text;

@@ -72,3 +72,30 @@ def test_weakest_tiebreak_prefers_fewer_attempts(fake_supabase):
 
 def test_no_attempts_returns_empty_list(fake_supabase):
     assert attempt_repo.get_unit_mastery(999) == []
+
+
+def test_overall_summary_empty_when_no_attempts(fake_supabase):
+    summary = attempt_repo.get_overall_summary(999)
+    assert summary["total_attempts"] == 0
+    assert summary["accuracy_by_difficulty"] == {"쉬움": None, "중간": None, "어려움": None}
+
+
+def test_overall_summary_computes_accuracy_by_difficulty(fake_supabase):
+    attempt_repo.record_attempt(1, "e1", "단원", hints_used=0, solved=True, difficulty="쉬움")
+    attempt_repo.record_attempt(1, "e2", "단원", hints_used=1, solved=False, difficulty="쉬움")
+    attempt_repo.record_attempt(1, "h1", "단원", hints_used=0, solved=True, difficulty="어려움")
+
+    summary = attempt_repo.get_overall_summary(1)
+    assert summary["total_attempts"] == 3
+    assert summary["total_hints_used"] == 1
+    assert summary["accuracy_by_difficulty"]["쉬움"] == 50.0
+    assert summary["accuracy_by_difficulty"]["어려움"] == 100.0
+    assert summary["accuracy_by_difficulty"]["중간"] is None
+    assert summary["message"]
+
+
+def test_overall_summary_includes_failed_reveal_attempts_in_accuracy(fake_supabase):
+    """정답을 공개(포기)한 시도도 '틀린 시도'로 정답률 분모에 들어가야 한다."""
+    attempt_repo.record_attempt(1, "p1", "단원", hints_used=3, solved=False, difficulty="어려움")
+    summary = attempt_repo.get_overall_summary(1)
+    assert summary["accuracy_by_difficulty"]["어려움"] == 0.0

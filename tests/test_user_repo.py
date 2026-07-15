@@ -3,7 +3,8 @@ from app.repositories import user_repo
 
 
 def test_creates_new_user(fake_supabase):
-    user = user_repo.get_or_create_user("민준", 5, 1, "1234")
+    user = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    assert user["login_id"] == "minjun01"
     assert user["name"] == "민준"
     assert user["grade"] == 5
     assert user["semester"] == 1
@@ -11,32 +12,33 @@ def test_creates_new_user(fake_supabase):
 
 
 def test_relogin_with_correct_password_returns_same_user(fake_supabase):
-    created = user_repo.get_or_create_user("민준", 5, 1, "1234")
-    again = user_repo.get_or_create_user("민준", 5, 1, "1234")
+    created = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    again = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
     assert again["id"] == created["id"]
     assert len(fake_supabase._tables["users"].rows) == 1   # 중복 생성 안 됨
 
 
 def test_relogin_updates_grade_and_semester(fake_supabase):
-    created = user_repo.get_or_create_user("민준", 5, 1, "1234")
-    updated = user_repo.get_or_create_user("민준", 6, 2, "1234")
+    created = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    updated = user_repo.get_or_create_user("minjun01", "민준", 6, 2, "1234")
     assert updated["id"] == created["id"]        # 같은 계정 유지
     assert updated["grade"] == 6
     assert updated["semester"] == 2
 
 
-def test_wrong_password_returns_conflict_not_error(fake_supabase):
-    user_repo.get_or_create_user("민준", 5, 1, "1234")
-    result = user_repo.get_or_create_user("민준", 5, 1, "다른비번")
-    assert result == user_repo.NAME_CONFLICT
+def test_wrong_password_returns_sentinel_not_error(fake_supabase):
+    user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    result = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "다른비번")
+    assert result == user_repo.WRONG_PASSWORD
 
 
-def test_create_new_explicit_makes_separate_account_for_homonym(fake_supabase):
-    first = user_repo.get_or_create_user("민준", 5, 1, "1234")
-    second = user_repo.get_or_create_user("민준", 6, 2, "다른비번", create_new=True)
-    assert second["id"] != first["id"]           # 동명이인 = 별도 계정
+def test_same_name_different_login_id_are_separate_accounts(fake_supabase):
+    """동명이인이어도 아이디가 다르면 완전히 별개 계정이어야 한다."""
+    first = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    second = user_repo.get_or_create_user("minjun02", "민준", 6, 2, "다른비번")
+    assert second["id"] != first["id"]
     assert len(fake_supabase._tables["users"].rows) == 2
 
     # 원래 계정은 그대로 로그인 가능해야 한다.
-    relogin = user_repo.get_or_create_user("민준", 5, 1, "1234")
+    relogin = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
     assert relogin["id"] == first["id"]
