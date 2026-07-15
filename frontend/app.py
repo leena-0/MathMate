@@ -472,6 +472,7 @@ def render_feedback_page():
             solved_line = "아직 스스로 끝까지 해결한 문제가 없어요"
         if revealed_count:
             solved_line += f' <span style="color:#D9534F;">· 정답 공개 {revealed_count}문제</span>'
+        solved_line += f' <span style="color:#AAA;">(성공률 {item.get("success_rate", 0)}%)</span>'
 
         st.markdown(
             f"""

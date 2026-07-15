@@ -34,12 +34,17 @@ def _mastery_level(avg_hints: float) -> str:
 
 
 def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | None = None) -> list[dict]:
-    """단원별 '스스로 해결한 문제 수 · 평균 힌트 사용량 · 숙련도 · 정답 공개된 문제 수'를 집계한다.
+    """단원별 '스스로 해결한 문제 수 · 평균 힌트 사용량 · 숙련도 · 정답 공개된 문제 수 · 성공률'을 집계한다.
     grade/semester를 넘기면 그 학년·학기에 시도한 문제만으로 좁혀서 집계한다.
 
     problems_attempted/avg_hints_used/mastery_level은 '스스로 해결한(solved) 문제'만 기준으로 하고,
     힌트를 다 쓰고 튜터가 정답을 공개한(solved=False) 문제는 revealed_count로 따로 센다 —
     둘을 섞으면 "힌트 평균"이 실제 실력보다 후하게 나오고, 포기한 문제가 조용히 묻혀버린다.
+
+    취약 단원 정렬은 success_rate(스스로 해결/전체 시도)가 낮은 순 — "한 번도 못 푼 단원"과
+    "가까스로라도 몇 번 푼 단원"을 같은 기준(성공률)으로 견줄 수 있게 한다. 동률이면 평균 힌트가
+    많은 쪽, 그래도 동률이면 포기(공개)한 문제가 많은 쪽, 그래도 동률이면 문제를 적게 푼(연습이
+    덜 된) 쪽을 더 약하다고 본다.
     """
     query = get_client().table("attempts").select("unit, hints_used, solved").eq("user_id", user_id)
     if grade is not None:
@@ -59,20 +64,19 @@ def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | Non
     items = []
     for unit in set(solved_hints) | set(revealed_count):
         hints = solved_hints.get(unit, [])
+        solved_n, revealed_n = len(hints), revealed_count.get(unit, 0)
+        total = solved_n + revealed_n
         avg_hints = sum(hints) / len(hints) if hints else None
         items.append({
             "unit": unit,
-            "problems_attempted": len(hints),
+            "problems_attempted": solved_n,
             "avg_hints_used": round(avg_hints, 1) if avg_hints is not None else None,
             "mastery_level": _mastery_level(avg_hints) if avg_hints is not None else "취약",
-            "revealed_count": revealed_count.get(unit, 0),
-            "_avg_hints_raw": avg_hints if avg_hints is not None else float("inf"),   # 정렬용, 반환 전 제거
+            "revealed_count": revealed_n,
+            "success_rate": round(100 * solved_n / total, 1) if total else 0.0,
         })
-    # 평균 힌트가 높은(약한) 순 — 스스로 푼 적이 아예 없는 단원(무한대 취급)이 가장 먼저 온다.
-    # 반올림 때문에 동점이면 문제 수가 적은(연습 덜 된) 쪽을 우선한다.
-    items.sort(key=lambda x: (-x["_avg_hints_raw"], x["problems_attempted"]))
-    for item in items:
-        del item["_avg_hints_raw"]
+    items.sort(key=lambda x: (x["success_rate"], -(x["avg_hints_used"] or 0), -x["revealed_count"],
+                              x["problems_attempted"]))
     return items
 
 

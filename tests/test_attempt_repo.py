@@ -88,6 +88,24 @@ def test_no_attempts_returns_empty_list(fake_supabase):
     assert attempt_repo.get_unit_mastery(999) == []
 
 
+def test_weakest_ranked_by_success_rate_not_raw_avg_hints(fake_supabase):
+    """스스로 해결한 게 하나도 없는 단원(성공률 0%)은, 힌트를 많이 쓰고서라도 하나는 해결한
+    단원(성공률 >0%)보다 항상 더 약하다고 판단해야 한다 — 둘 다 힌트 3개짜리 기록이 있어도."""
+    _record(1, "비례식과 비례배분", 3, solved=False, problem_id="a")   # 0/1 = 성공률 0%
+
+    _record(1, "큰 수", 3, solved=True, problem_id="b")                # 1/3 = 성공률 33%
+    _record(1, "큰 수", 3, solved=False, problem_id="c")
+    _record(1, "큰 수", 3, solved=False, problem_id="d")
+
+    items = {i["unit"]: i for i in attempt_repo.get_unit_mastery(1)}
+    assert items["비례식과 비례배분"]["success_rate"] == 0.0
+    assert items["큰 수"]["success_rate"] == round(100 / 3, 1)
+
+    ordered = attempt_repo.get_unit_mastery(1)
+    assert ordered[0]["unit"] == "비례식과 비례배분"
+    assert ordered[1]["unit"] == "큰 수"
+
+
 def test_overall_summary_empty_when_no_attempts(fake_supabase):
     summary = attempt_repo.get_overall_summary(999)
     assert summary["total_attempts"] == 0
