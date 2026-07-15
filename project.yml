@@ -56,8 +56,8 @@ tech_stack:
     - GitHub Actions
 
 links:
-  demo_video_url:
-  deployed_url: 
+  demo_video_url: https://github.com/user-attachments/assets/9682545e-31db-4bda-815e-d470be347189
+  deployed_url: http://34.158.211.122:8501/
   presentation_url: https://docs.google.com/presentation/d/1x0U7ITbB2ES_dt2O26vNbChOKDnXoOHcxuWii-nsOBg/edit?usp=sharing
   repository_url: https://github.com/leena-0/MathMate
 
