@@ -34,30 +34,42 @@ def _mastery_level(avg_hints: float) -> str:
 
 
 def get_unit_mastery(user_id: int, grade: int | None = None, semester: int | None = None) -> list[dict]:
-    """단원별 '푼 문제 수 · 평균 힌트 사용량 · 숙련도'를 그때그때 집계한다.
-    grade/semester를 넘기면 그 학년·학기에 푼 문제만으로 좁혀서 집계한다."""
-    query = get_client().table("attempts").select("unit, hints_used").eq("user_id", user_id).eq("solved", True)
+    """단원별 '스스로 해결한 문제 수 · 평균 힌트 사용량 · 숙련도 · 정답 공개된 문제 수'를 집계한다.
+    grade/semester를 넘기면 그 학년·학기에 시도한 문제만으로 좁혀서 집계한다.
+
+    problems_attempted/avg_hints_used/mastery_level은 '스스로 해결한(solved) 문제'만 기준으로 하고,
+    힌트를 다 쓰고 튜터가 정답을 공개한(solved=False) 문제는 revealed_count로 따로 센다 —
+    둘을 섞으면 "힌트 평균"이 실제 실력보다 후하게 나오고, 포기한 문제가 조용히 묻혀버린다.
+    """
+    query = get_client().table("attempts").select("unit, hints_used, solved").eq("user_id", user_id)
     if grade is not None:
         query = query.eq("grade", grade)
     if semester is not None:
         query = query.eq("semester", semester)
     res = query.execute()
 
-    by_unit: dict[str, list[int]] = defaultdict(list)
+    solved_hints: dict[str, list[int]] = defaultdict(list)
+    revealed_count: dict[str, int] = defaultdict(int)
     for row in res.data:
-        by_unit[row["unit"]].append(row["hints_used"])
+        if row.get("solved"):
+            solved_hints[row["unit"]].append(row["hints_used"])
+        else:
+            revealed_count[row["unit"]] += 1
 
     items = []
-    for unit, hints in by_unit.items():
-        avg_hints = sum(hints) / len(hints)
+    for unit in set(solved_hints) | set(revealed_count):
+        hints = solved_hints.get(unit, [])
+        avg_hints = sum(hints) / len(hints) if hints else None
         items.append({
             "unit": unit,
             "problems_attempted": len(hints),
-            "avg_hints_used": round(avg_hints, 1),
-            "mastery_level": _mastery_level(avg_hints),
-            "_avg_hints_raw": avg_hints,   # 반올림 전 값 — 정렬용, 반환 직전에 제거
+            "avg_hints_used": round(avg_hints, 1) if avg_hints is not None else None,
+            "mastery_level": _mastery_level(avg_hints) if avg_hints is not None else "취약",
+            "revealed_count": revealed_count.get(unit, 0),
+            "_avg_hints_raw": avg_hints if avg_hints is not None else float("inf"),   # 정렬용, 반환 전 제거
         })
-    # 평균 힌트가 높은(약한) 순, 반올림 때문에 동점이면 문제 수가 적은(연습 덜 된) 쪽을 우선한다.
+    # 평균 힌트가 높은(약한) 순 — 스스로 푼 적이 아예 없는 단원(무한대 취급)이 가장 먼저 온다.
+    # 반올림 때문에 동점이면 문제 수가 적은(연습 덜 된) 쪽을 우선한다.
     items.sort(key=lambda x: (-x["_avg_hints_raw"], x["problems_attempted"]))
     for item in items:
         del item["_avg_hints_raw"]

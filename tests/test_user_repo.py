@@ -32,6 +32,16 @@ def test_wrong_password_returns_sentinel_not_error(fake_supabase):
     assert result == user_repo.WRONG_PASSWORD
 
 
+def test_matching_password_but_different_name_is_rejected(fake_supabase):
+    """아이디+비밀번호가 우연히 같아도 이름이 다르면 다른 사람 계정을 그대로 넘겨받으면 안 된다."""
+    user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    result = user_repo.get_or_create_user("minjun01", "지민", 5, 1, "1234")
+    assert result == user_repo.NAME_MISMATCH
+    # 원래 계정 이름은 그대로 유지돼야 한다(덮어써지면 안 됨).
+    relogin = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
+    assert relogin["name"] == "민준"
+
+
 def test_same_name_different_login_id_are_separate_accounts(fake_supabase):
     """동명이인이어도 아이디가 다르면 완전히 별개 계정이어야 한다."""
     first = user_repo.get_or_create_user("minjun01", "민준", 5, 1, "1234")
