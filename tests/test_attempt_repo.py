@@ -14,14 +14,28 @@ def _record(user_id, unit, hints_used, grade=5, semester=1, solved=True, problem
     )
 
 
-def test_only_solved_attempts_are_counted(fake_supabase):
+def test_avg_hints_and_mastery_only_count_solved_attempts(fake_supabase):
+    """평균 힌트·숙련도는 스스로 해결한 시도만 기준으로 하고, 공개된 시도는 revealed_count로 따로 센다."""
     _record(1, "도형", 1, solved=True, problem_id="p1")
-    _record(1, "도형", 3, solved=False, problem_id="p2")   # 못 풀었으면 집계에서 빠져야 함
+    _record(1, "도형", 3, solved=False, problem_id="p2")   # 힌트 다 쓰고 정답 공개됨
 
     items = attempt_repo.get_unit_mastery(1)
     assert len(items) == 1
     assert items[0]["problems_attempted"] == 1
     assert items[0]["avg_hints_used"] == 1.0
+    assert items[0]["revealed_count"] == 1
+
+
+def test_unit_with_only_revealed_attempts_still_appears(fake_supabase):
+    """스스로 해결한 문제가 하나도 없어도(전부 공개됨), 그 단원은 목록에 나와야 한다."""
+    _record(1, "분수", 3, solved=False, problem_id="p1")
+    _record(1, "분수", 3, solved=False, problem_id="p2")
+
+    items = attempt_repo.get_unit_mastery(1)
+    assert len(items) == 1
+    assert items[0]["problems_attempted"] == 0
+    assert items[0]["avg_hints_used"] is None
+    assert items[0]["revealed_count"] == 2
 
 
 def test_mastery_level_thresholds(fake_supabase):

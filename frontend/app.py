@@ -90,7 +90,8 @@ st.markdown(
 
 
 def create_or_get_profile(login_id: str, name: str, grade: int, semester: int, password: str):
-    """성공하면 프로필 dict, 아이디는 있는데 비번이 다르면 'wrong_password', 연결 실패면 None."""
+    """성공하면 프로필 dict, 아이디는 있는데 비번이 다르면 'wrong_password',
+    아이디·비번은 맞는데 이름이 다르면 'name_mismatch', 연결 실패면 None."""
     try:
         res = httpx.post(f"{BACKEND_URL}/api/profile",
                           json={"login_id": login_id, "name": name, "grade": grade,
@@ -98,6 +99,8 @@ def create_or_get_profile(login_id: str, name: str, grade: int, semester: int, p
                           timeout=5)
         if res.status_code == 401:
             return "wrong_password"
+        if res.status_code == 409:
+            return "name_mismatch"
         res.raise_for_status()
         return res.json()
     except httpx.HTTPError:
@@ -224,6 +227,44 @@ def mastery_bar_width(avg_hints_used: float) -> int:
 
 
 # ---------- 프로필(로그인 대체) ----------
+# 새로고침해도 로그인 화면으로 안 돌아가도록, 로그인 성공 시 프로필을 URL 쿼리 파라미터에도
+# 저장해둔다. Streamlit은 브라우저를 새로고침하면 session_state가 초기화되지만
+# 쿼리 파라미터는 URL에 남아있어서, 시작할 때 여기서 다시 읽어와 세션을 복원한다.
+
+def _restore_user_from_query_params():
+    q = st.query_params
+    uid = q.get("uid")
+    if not uid:
+        return None
+    try:
+        return {
+            "user_id": int(uid),
+            "login_id": q.get("login_id", ""),
+            "name": q.get("name", ""),
+            "grade": int(q.get("grade", 4)),
+            "semester": int(q.get("semester", 1)),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _login(profile: dict):
+    st.session_state.user = profile
+    st.query_params.update({
+        "uid": str(profile["user_id"]), "login_id": profile["login_id"],
+        "name": profile["name"], "grade": str(profile["grade"]), "semester": str(profile["semester"]),
+    })
+
+
+def _logout():
+    del st.session_state.user
+    st.query_params.clear()
+
+
+if "user" not in st.session_state:
+    restored = _restore_user_from_query_params()
+    if restored:
+        st.session_state.user = restored
 
 if "user" not in st.session_state:
     st.title("🧮 MathMate")
@@ -250,8 +291,10 @@ if "user" not in st.session_state:
                 st.error("앗, 서버랑 연결이 안 돼요. 선생님을 불러주세요!")
             elif profile == "wrong_password":
                 st.error("어? 그 아이디는 이미 있는데 비밀번호가 달라요. 다시 확인해줄래?")
+            elif profile == "name_mismatch":
+                st.error("어? 그 아이디는 이미 있는데 이름이 달라요. 아이디를 다시 확인해줄래?")
             else:
-                st.session_state.user = profile
+                _login(profile)
                 st.rerun()
     st.stop()
 
@@ -261,6 +304,9 @@ user = st.session_state.user
 
 st.sidebar.markdown(f"### 🧮 MathMate\n**{user['name']}** ({user['grade']}학년 {user['semester']}학기)")
 page = st.sidebar.radio("메뉴", ["💬 학습", "📊 피드백"], label_visibility="collapsed")
+if st.sidebar.button("🚪 로그아웃"):
+    _logout()
+    st.rerun()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -417,7 +463,16 @@ def render_feedback_page():
 
     for item in items:
         color = MASTERY_COLOR.get(item["mastery_level"], "#999")
-        width = mastery_bar_width(item["avg_hints_used"])
+        width = mastery_bar_width(item["avg_hints_used"]) if item["avg_hints_used"] is not None else 0
+        revealed_count = item.get("revealed_count", 0)
+
+        if item["problems_attempted"] > 0:
+            solved_line = f"평균 힌트 {item['avg_hints_used']}개 · 스스로 해결 {item['problems_attempted']}문제"
+        else:
+            solved_line = "아직 스스로 끝까지 해결한 문제가 없어요"
+        if revealed_count:
+            solved_line += f' <span style="color:#D9534F;">· 정답 공개 {revealed_count}문제</span>'
+
         st.markdown(
             f"""
             <div class="mastery-card">
@@ -431,7 +486,7 @@ def render_feedback_page():
                 <div class="mastery-bar-fill" style="width:{width}%; background:{color};"></div>
               </div>
               <div style="color:#888; font-size:15px;">
-                평균 힌트 {item['avg_hints_used']}개 · {item['problems_attempted']}문제
+                {solved_line}
               </div>
             </div>
             """,

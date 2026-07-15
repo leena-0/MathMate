@@ -29,6 +29,16 @@ def test_profile_wrong_password_returns_401(fake_supabase):
     assert res.status_code == 401
 
 
+def test_profile_matching_password_but_different_name_returns_409(fake_supabase):
+    client.post("/api/profile", json={
+        "login_id": "jiwoo05", "name": "지우", "grade": 5, "semester": 1, "password": "1234",
+    })
+    res = client.post("/api/profile", json={
+        "login_id": "jiwoo05", "name": "다른이름", "grade": 5, "semester": 1, "password": "1234",
+    })
+    assert res.status_code == 409
+
+
 def test_profile_same_name_different_login_id_is_separate_account(fake_supabase):
     res1 = client.post("/api/profile", json={
         "login_id": "jiwoo03", "name": "지우", "grade": 5, "semester": 1, "password": "1234",

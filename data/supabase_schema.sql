@@ -53,3 +53,7 @@ alter table public.users add column if not exists login_id text unique;
 
 -- attempts: 난이도별 정답률 계산을 위해 문제 난이도를 같이 저장.
 alter table public.attempts add column if not exists difficulty text;
+
+-- progress: 힌트를 다 쓰고 포기(공개)한 문제인지 기록 — 이미 끝난 문제를 다시 고르면
+-- 힌트 단계를 리셋하고 새로 시작하기 위해 필요(안 그러면 재도전해도 곧장 정답이 공개됨).
+alter table public.progress add column if not exists revealed boolean not null default false;
