@@ -57,7 +57,11 @@ MathMate는 위 문제를 다음과 같이 풀어냅니다.
 
 ## 데모 영상
 
-_(추후 추가 예정)_
+
+
+https://github.com/user-attachments/assets/9682545e-31db-4bda-815e-d470be347189
+
+
 
 ## 팀원 소개
 
