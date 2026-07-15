@@ -63,8 +63,8 @@ _(추후 추가 예정)_
 
 | 이름 | 역할 | GitHub |
 |---|---|---|
-| 권지운 | | [@jiwoon084](https://github.com/jiwoon084) |
-| 이나영 | | [@leena-0](https://github.com/leena-0) |
+| 권지운 | Backend, Agent | [@jiwoon084](https://github.com/jiwoon084) |
+| 이나영 | Frontend, Infra, LLMOps | [@leena-0](https://github.com/leena-0) |
 
 ## 참고자료 / 발표자료
 

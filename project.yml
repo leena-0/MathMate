@@ -6,10 +6,10 @@ team:
   name: mathmate
   members:
     - name: 이나영
-      role: ""   # TODO: 역할 채우기 (예: Backend, AI)
+      role: Frontend, Infra, LLMOps
       github: leena-0
     - name: 권지운
-      role: ""   # TODO: 역할 채우기 (예: Frontend, Data)
+      role: Backend, Agent
       github: jiwoon084
 
 project:
