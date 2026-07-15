@@ -5,25 +5,101 @@
 실행:
     python -m evals.eval_pipeline_accuracy
 
-Langfuse 대시보드에서 score 이름(intent_accuracy / diagnosis_solved_accuracy / hint_quality)별로
-평균을 보면 발표용 정확도 수치가 된다.
+Langfuse 대시보드에서 score 이름별로 평균을 보면 발표용 정확도 수치가 된다.
 
 신뢰도 참고:
 - diagnosis_solved_accuracy: 정답 기준이 문제은행에 저장된 진짜 answer라서 사람 판단이 전혀 없다(기계적 비교).
-- intent_accuracy / hint_quality: 정답 라벨/기대 키워드를 작성자가 직접 정한 것이라 주관이 일부 섞여있다.
+- intent_accuracy / diagnosis_stuckpoint_accuracy / hint_quality: 정답 라벨/기대 키워드를 작성자가
+  직접 정한 것이라 주관이 일부 섞여있다.
+- *_gemini_agreement / *_gemini_judge: 작성자 라벨과 무관하게, Solar와 다른 모델(Gemini)이 같은
+  케이스를 독립적으로 판단해서 서로 동의하는지를 본다. 작성자의 라벨이 틀렸어도 걸러낼 수 있는
+  두 번째 신뢰도 축이다.
 """
 from dotenv import load_dotenv
 load_dotenv()
 
 import re
+import time
 import uuid
 
 from langfuse import Langfuse
 
+from app.core import config, llm_client, prompts
 from app.repositories import problem_repo
 from app.tools import tutor_tools
 
 langfuse = Langfuse()
+
+
+# ---------- Gemini 교차검증(독립적 2차 의견) ----------
+# Solar가 이미 만든 결과를 Gemini한테 다시 보여주는 게 아니라, Gemini도 동일한 원본 입력만
+# 가지고 독립적으로 판단하게 한다 — 그래야 "서로 다른 모델이 우연히 같은 답에 도달했는가"를 볼 수 있다.
+
+JUDGE_SYS = (
+    "너는 초등 수학 채점 결과를 검수하는 감사관이다. 문제, 학생의 답, 그리고 AI 튜터가 만든 "
+    "설명(막힌 지점 또는 힌트)을 보고, 그 설명이 학생의 실제 실수를 정확하게 짚었는지만 판단한다.\n"
+    '반드시 {"correct": true/false} 형태의 JSON만 출력하라.\n'
+    "설명이 학생이 왜 틀렸는지(또는 어디서 막혔는지)를 사실에 맞게 정확히 설명하면 true, "
+    "틀린 설명이거나 요점을 빗나갔으면 false."
+)
+
+
+_GEMINI_MIN_INTERVAL = 13   # 무료 티어 분당 5회 제한(≈12초/회) 대비 여유를 둔 호출 간격(초)
+_last_gemini_call_at: float | None = None
+
+
+def _call_gemini_json(system: str, user: str, trace_name: str, trace_id: str) -> dict | None:
+    """Solar가 아니라 Gemini를 '주 모델'로 직접 호출한다(폴백 경로 재사용 아님).
+    무료 티어 분당 요청 제한에 걸리지 않게 호출 간격을 띄우고, 그래도 429가 나면 한 번 더 재시도한다.
+    그래도 실패하면 None — 교차검증 실패는 점수를 안 남기고 조용히 건너뛴다."""
+    if not config.GEMINI_API_KEY or not config.FALLBACK_MODEL:
+        return None
+    import litellm
+    import litellm.exceptions as exc
+
+    llm_client._ensure_langfuse_callback()
+
+    global _last_gemini_call_at
+    if _last_gemini_call_at is not None:
+        wait = _GEMINI_MIN_INTERVAL - (time.time() - _last_gemini_call_at)
+        if wait > 0:
+            time.sleep(wait)
+
+    for attempt in range(2):
+        _last_gemini_call_at = time.time()
+        try:
+            resp = litellm.completion(
+                model=config.FALLBACK_MODEL,
+                api_key=config.GEMINI_API_KEY,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                metadata={"trace_name": trace_name, "trace_id": trace_id},
+            )
+            return llm_client._safe_json(resp.choices[0].message.content)
+        except exc.RateLimitError as e:
+            if attempt == 0:
+                print("  (Gemini 분당 요청 제한, 20초 대기 후 재시도)")
+                time.sleep(20)
+                continue
+            print(f"  (Gemini 교차검증 호출 실패, 건너뜀: {e})")
+            return None
+        except Exception as e:
+            print(f"  (Gemini 교차검증 호출 실패, 건너뜀: {e})")
+            return None
+
+
+def gemini_classify_intent(message: str, problem: dict, trace_id: str) -> str | None:
+    data = _call_gemini_json(prompts.INTENT_SYS, prompts.intent_user(problem, message),
+                              "gemini_intent_classify", trace_id)
+    return data.get("intent") if data else None
+
+
+def gemini_judge_explanation(problem: dict, attempt: str, explanation: str, trace_id: str) -> bool | None:
+    user = (f"문제: {problem['problem']}\n정답(판정용): {problem['answer']}\n"
+            f"학생 답: {attempt}\nAI 설명: {explanation}")
+    data = _call_gemini_json(JUDGE_SYS, user, "gemini_judge", trace_id)
+    return bool(data.get("correct")) if data is not None and "correct" in data else None
 
 
 def _extract_numbers(text: str) -> set[str]:
@@ -83,25 +159,40 @@ HINT_CASES = [
 ]
 
 
-def eval_intent() -> list[bool]:
-    results = []
+def eval_intent() -> tuple[list[bool], list[bool]]:
+    """반환: (label_results, cross_model_results)."""
+    label_results = []
+    cross_results = []
     dummy_problem = problem_repo.get_problem("p_0060")
     for case in INTENT_CASES:
         trace_id = str(uuid.uuid4())
         intent = tutor_tools.classify_intent(case["message"], dummy_problem, trace_id=trace_id)
         correct = intent == case["expected"]
-        results.append(correct)
+        label_results.append(correct)
         langfuse.score(trace_id=trace_id, name="intent_accuracy",
                         value=correct, data_type="BOOLEAN",
                         comment=f"message={case['message']!r} expected={case['expected']} got={intent}")
-        print(f"[intent] {'OK ' if correct else 'FAIL'} {case['message']!r} -> {intent} (기대: {case['expected']})")
-    return results
+
+        line = f"[intent] label={'OK ' if correct else 'FAIL'} {case['message']!r} -> {intent} (기대: {case['expected']})"
+
+        gemini_intent = gemini_classify_intent(case["message"], dummy_problem, trace_id)
+        if gemini_intent is not None:
+            agree = gemini_intent == intent
+            cross_results.append(agree)
+            langfuse.score(trace_id=trace_id, name="intent_gemini_agreement",
+                            value=agree, data_type="BOOLEAN",
+                            comment=f"solar={intent} gemini={gemini_intent}")
+            line += f" | gemini={'동의' if agree else '불일치'}({gemini_intent})"
+
+        print(line)
+    return label_results, cross_results
 
 
-def eval_diagnosis() -> tuple[list[bool], list[bool]]:
-    """반환: (solved_results, stuckpoint_results) — 서로 다른 두 능력을 따로 채점한다."""
+def eval_diagnosis() -> tuple[list[bool], list[bool], list[bool]]:
+    """반환: (solved_results, stuckpoint_results, gemini_judge_results)."""
     solved_results = []
     stuckpoint_results = []
+    gemini_judge_results = []
     for case in DIAGNOSIS_CASES:
         problem = problem_repo.get_problem(case["problem_id"])
         trace_id = str(uuid.uuid4())
@@ -130,12 +221,23 @@ def eval_diagnosis() -> tuple[list[bool], list[bool]]:
                                     f"stuck_point={d.stuck_point!r} expect_any={expect_stuck_any}")
             line += f" | stuckpoint={'OK ' if stuck_ok else 'FAIL'} stuck_point={d.stuck_point!r}"
 
+            # ③ 내 키워드 라벨과 무관하게, Gemini가 독립적으로 봐도 이 stuck_point가 맞다고 하는지
+            gemini_ok = gemini_judge_explanation(problem, case["attempt"], d.stuck_point, trace_id)
+            if gemini_ok is not None:
+                gemini_judge_results.append(gemini_ok)
+                langfuse.score(trace_id=trace_id, name="diagnosis_stuckpoint_gemini_judge",
+                                value=gemini_ok, data_type="BOOLEAN",
+                                comment=f"stuck_point={d.stuck_point!r} gemini_verdict={gemini_ok}")
+                line += f" | gemini판단={'맞음' if gemini_ok else '틀림'}"
+
         print(line)
-    return solved_results, stuckpoint_results
+    return solved_results, stuckpoint_results, gemini_judge_results
 
 
-def eval_hint() -> list[bool]:
-    results = []
+def eval_hint() -> tuple[list[bool], list[bool]]:
+    """반환: (keyword_results, gemini_judge_results)."""
+    keyword_results = []
+    gemini_judge_results = []
     for case in HINT_CASES:
         problem = problem_repo.get_problem(case["problem_id"])
         trace_id = str(uuid.uuid4())
@@ -143,15 +245,25 @@ def eval_hint() -> list[bool]:
         h = tutor_tools.generate_hint(problem, case["hint_level"], d.stuck_point,
                                        student_attempt=case["attempt"], trace_id=trace_id)
         correct = any(kw in h.hint_text for kw in case["expect_any"])
-        results.append(correct)
+        keyword_results.append(correct)
         langfuse.score(trace_id=trace_id, name="hint_quality",
                         value=correct, data_type="BOOLEAN",
                         comment=f"problem={case['problem_id']} attempt={case['attempt']!r} "
                                 f"stuck_point={d.stuck_point!r} hint={h.hint_text!r} "
                                 f"expect_any={case['expect_any']}")
-        print(f"[hint] {'OK ' if correct else 'FAIL'} {case['problem_id']} {case['attempt']!r} "
-              f"-> {h.hint_text!r}")
-    return results
+
+        line = f"[hint] keyword={'OK ' if correct else 'FAIL'} {case['problem_id']} {case['attempt']!r} -> {h.hint_text!r}"
+
+        gemini_ok = gemini_judge_explanation(problem, case["attempt"], h.hint_text, trace_id)
+        if gemini_ok is not None:
+            gemini_judge_results.append(gemini_ok)
+            langfuse.score(trace_id=trace_id, name="hint_quality_gemini_judge",
+                            value=gemini_ok, data_type="BOOLEAN",
+                            comment=f"hint={h.hint_text!r} gemini_verdict={gemini_ok}")
+            line += f" | gemini판단={'맞음' if gemini_ok else '틀림'}"
+
+        print(line)
+    return keyword_results, gemini_judge_results
 
 
 def _pct(results: list[bool]) -> str:
@@ -161,18 +273,21 @@ def _pct(results: list[bool]) -> str:
 
 
 def main():
-    print("=== 의도분류 (우회 탐지율) ===")
-    intent_results = eval_intent()
-    print("\n=== 오답 진단: 정답 판별 + 막힌 지점 진단 ===")
-    solved_results, stuckpoint_results = eval_diagnosis()
-    print("\n=== 힌트 품질(진단 반영 여부) ===")
-    hint_results = eval_hint()
+    print("=== 의도분류 (우회 탐지율 + Gemini 교차검증) ===")
+    intent_label_results, intent_cross_results = eval_intent()
+    print("\n=== 오답 진단: 정답 판별 + 막힌 지점 진단 + Gemini 교차검증 ===")
+    solved_results, stuckpoint_results, diag_gemini_results = eval_diagnosis()
+    print("\n=== 힌트 품질(진단 반영 여부 + Gemini 교차검증) ===")
+    hint_keyword_results, hint_gemini_results = eval_hint()
 
     print("\n=== 요약 ===")
-    print("의도분류:", _pct(intent_results))
+    print("의도분류(라벨 기준):", _pct(intent_label_results))
+    print("의도분류(Gemini 교차검증 동의율):", _pct(intent_cross_results))
     print("진단-정답판별(객관적, 기계채점):", _pct(solved_results))
-    print("진단-막힌지점(원래 목적, 근사채점):", _pct(stuckpoint_results))
-    print("힌트품질:", _pct(hint_results))
+    print("진단-막힌지점(라벨 기준):", _pct(stuckpoint_results))
+    print("진단-막힌지점(Gemini 독립판단):", _pct(diag_gemini_results))
+    print("힌트품질(라벨 기준):", _pct(hint_keyword_results))
+    print("힌트품질(Gemini 독립판단):", _pct(hint_gemini_results))
 
     langfuse.flush()   # 프로세스 종료 전 대기 중인 score/trace를 서버로 전송
     print("\nLangfuse에 score 전송 완료.")
